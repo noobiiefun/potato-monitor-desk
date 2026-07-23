@@ -33,7 +33,16 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_margin="12dp"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/liveSwitch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="LIVE"
+            android:textColor="@android:color/white" />
 
         <ImageButton
             android:id="@+id/settingsButton"
@@ -52,5 +61,21 @@
             android:contentDescription="Minimize"
             android:src="@android:drawable/ic_menu_close_clear_cancel" />
     </LinearLayout>
+
+    <TextView
+        android:id="@+id/liveBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="12dp"
+        android:background="#CCD32F2F"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:text="🔴 LIVE 00:00"
+        android:textColor="@android:color/white"
+        android:textStyle="bold"
+        android:visibility="gone" />
 
 </FrameLayout>

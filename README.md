@@ -127,6 +127,40 @@ tampil status "Menghubungkan..." dan tombol **Reconnect** untuk coba lagi.
 
 ---
 
+## Live streaming langsung dari app (tanpa app terpisah)
+
+Potato Monitor Desk sekarang bisa live-streaming isi layar HP (yaitu mirror
+PC yang sedang tampil) langsung ke RTMP — YouTube Live, Facebook Live, atau
+server RTMP sendiri — pakai library open-source **RootEncoder**. Ini
+menghilangkan kebutuhan buka app live-streaming terpisah yang bisa saling
+mematikan proses saat minimize/switch app.
+
+**Cara pakai:**
+1. Buka ⚙ **Pengaturan** > **Pengaturan Live** > isi *Alamat RTMP* (URL
+   server + stream key digabung jadi satu, contoh format YouTube:
+   `rtmp://a.rtmp.youtube.com/live2/<stream-key>`), pilih posisi timer LIVE
+   (kiri/kanan, atas/bawah), lalu Simpan.
+2. Nyalakan switch **LIVE** di pojok kanan atas.
+3. Android akan minta izin "mulai merekam/streaming layar" (izin
+   MediaProjection) — izinkan sekali.
+4. Live dimulai: badge **🔴 LIVE 00:00:xx** muncul di posisi yang kamu pilih
+   dan bertambah setiap detik. Kalau tidak sedang live (cuma mirror layar
+   biasa), badge ini otomatis tersembunyi.
+5. Matikan switch **LIVE** kapan saja untuk stop stream tanpa menutup app.
+
+Audio yang dikirim ke live default mengambil **audio internal (system audio)
+HP** — yaitu suara PC yang sedang diputar lewat speaker/headset HP — bukan
+mikrofon, supaya tidak ada noise ruangan/gema. Ini butuh Android 10+; di
+Android lebih lama otomatis fallback ke mikrofon HP.
+
+> Catatan teknis: kode integrasi ini mengikuti API resmi library RootEncoder
+> (`RtmpDisplay`, `ConnectCheckerRtmp`, dst). Kalau versi library yang
+> ter-download Gradle sedikit berbeda dan Android Studio menunjukkan error
+> import, cek contoh resmi di halaman GitHub RootEncoder (folder
+> `displayexample`) untuk menyesuaikan nama class/package persis versi kamu.
+
+---
+
 ## Fitur client (HP)
 
 Tekan ikon gear (⚙) di pojok kanan atas saat streaming untuk membuka menu:
