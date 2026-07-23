@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
     "video_bitrate": "3M",
     "audio_bitrate": "128k",
     "port": 9999,
+    "control_port": 9998,
     "resolution": "1280x720",
     "framerate": 30
 }
@@ -114,6 +115,42 @@ class StreamManager:
         self._device_name = ""
         self._reversed_serial = None
         self._poll_thread.start()
+        self._control_thread = threading.Thread(target=self._control_server_loop, daemon=True)
+        self._control_thread.start()
+
+    # ---------- control channel (client bisa ganti resolusi/bitrate) ----------
+    def _control_server_loop(self):
+        import socket as sk
+        srv = sk.socket(sk.AF_INET, sk.SOCK_STREAM)
+        srv.setsockopt(sk.SOL_SOCKET, sk.SO_REUSEADDR, 1)
+        try:
+            srv.bind(("0.0.0.0", self.cfg["control_port"]))
+            srv.listen(2)
+        except Exception:
+            return
+        while True:
+            try:
+                conn, _ = srv.accept()
+                data = conn.recv(4096).decode("utf-8", errors="ignore").strip()
+                conn.close()
+                if data:
+                    cmd = json.loads(data)
+                    self.update_settings(cmd)
+            except Exception:
+                pass
+
+    def update_settings(self, cmd: dict):
+        changed = False
+        for key in ("resolution", "video_bitrate", "framerate"):
+            if key in cmd and cmd[key] != self.cfg.get(key):
+                self.cfg[key] = cmd[key]
+                changed = True
+        if not changed:
+            return
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.cfg, f, indent=2)
+        if self._proc is not None:
+            self._proc.terminate()  # _run_loop akan restart otomatis dengan cfg baru
 
     # ---------- adb polling ----------
     def _get_connected_device(self):
@@ -143,6 +180,8 @@ class StreamManager:
                 if not self._usb_connected or serial != self._reversed_serial:
                     subprocess.run(["adb", "-s", serial, "reverse",
                                      f"tcp:{self.cfg['port']}", f"tcp:{self.cfg['port']}"])
+                    subprocess.run(["adb", "-s", serial, "reverse",
+                                     f"tcp:{self.cfg['control_port']}", f"tcp:{self.cfg['control_port']}"])
                     self._reversed_serial = serial
                 self._usb_connected = True
                 self._device_name = self._get_device_model(serial)
@@ -172,8 +211,8 @@ class StreamManager:
         self._notify()
 
     def _run_loop(self):
-        cmd = build_ffmpeg_cmd(self.cfg)
         while self._want_running:
+            cmd = build_ffmpeg_cmd(self.cfg)  # dibangun ulang tiap iterasi agar setting baru terpakai
             try:
                 self._proc = subprocess.Popen(cmd)
                 self._notify()

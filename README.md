@@ -103,6 +103,30 @@ tampil status "Menghubungkan..." dan tombol **Reconnect** untuk coba lagi.
 
 ---
 
+## Fitur client (HP)
+
+Tekan ikon gear (⚙) di pojok kanan atas saat streaming untuk membuka menu:
+
+- **Kualitas Streaming** — pilih preset resolusi/bitrate (Rendah/Sedang/Tinggi/
+  Sangat Tinggi). Perintah dikirim ke server lewat kabel USB (port kontrol
+  terpisah, `9998`), server otomatis restart proses ffmpeg dengan setting baru
+  — stream di HP akan reconnect sendiri dalam beberapa detik.
+- **Aplikasi yang Disunyikan** — daftar semua app terpasang, centang app yang
+  notifnya ingin dibungkam SAAT Potato Monitor Desk aktif (mis. WhatsApp,
+  Telegram, Instagram). App yang tidak dicentang (mis. app live-streaming
+  kamu) tetap tampil notifikasinya seperti biasa.
+- **Izin Akses Notifikasi** — wajib diaktifkan sekali (Android mengharuskan
+  izin ini diberikan manual lewat Settings, tidak bisa otomatis dari app).
+  Tanpa izin ini, fitur "Aplikasi yang Disunyikan" tidak akan bekerja.
+
+**Minimize / Picture-in-Picture**: tombol minimize (pojok kanan atas) atau
+tekan tombol Home akan mengecilkan app jadi floating window kecil yang tetap
+menampilkan preview sambil kamu buka app lain — bukan benar-benar keluar dari
+stream. Untuk keluar total, tutup floating window-nya atau buka lagi lalu
+tekan Back.
+
+---
+
 ## Catatan & tuning
 
 - **Latensi**: default preset `ultrafast` + `zerolatency` untuk latensi rendah.

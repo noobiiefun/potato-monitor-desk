@@ -28,4 +28,29 @@
         android:layout_marginBottom="24dp"
         android:text="Reconnect" />
 
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="12dp"
+        android:orientation="horizontal">
+
+        <ImageButton
+            android:id="@+id/settingsButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginEnd="8dp"
+            android:background="#66000000"
+            android:contentDescription="Pengaturan"
+            android:src="@android:drawable/ic_menu_manage" />
+
+        <ImageButton
+            android:id="@+id/minimizeButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="#66000000"
+            android:contentDescription="Minimize"
+            android:src="@android:drawable/ic_menu_close_clear_cancel" />
+    </LinearLayout>
+
 </FrameLayout>
