@@ -1,15 +1,28 @@
 # Potato Monitor Desk
 
-Preview layar OBS (video + audio) dari PC ke HP Android lewat kabel USB —
-versi ringan tanpa driver display virtual seperti spacedesk.
+Preview layar + suara PC ke HP Android lewat kabel USB — versi ringan ala
+spacedesk, tapi **tanpa driver display virtual** (bukan extend monitor asli,
+melainkan mirror/preview layar PC ke HP dengan latensi rendah).
+
+Server berjalan di **system tray** (bukan console), dengan window sederhana:
+- Saklar ON/OFF untuk mulai/berhenti streaming.
+- Status USB: Terhubung / Tidak terhubung (auto update tiap 2 detik).
+- Nama device Android yang sedang konek.
+- Menutup window (tombol X) hanya minimize ke tray — app tetap jalan di
+  background. Klik kanan icon tray untuk buka lagi atau benar-benar Keluar.
+
+> Catatan: membuat HP benar-benar terdeteksi Windows sebagai monitor kedua
+> (extend desktop) butuh Indirect Display Driver kernel-mode yang harus
+> disertifikasi Microsoft — di luar scope project ringan ini. Yang dilakukan
+> di sini adalah mirror layar+audio real-time, bukan extend display.
 
 Arsitektur:
 
 ```
-OBS Virtual Camera (video) + Stereo Mix / VB-Cable (audio)
+Layar & audio PC (gdigrab + Stereo Mix/VB-Cable)
    -> ffmpeg (encode H.264 + AAC, mux MPEG-TS)
-   -> TCP server (potato_server.exe)
-   -> adb reverse (tunnel lewat kabel USB)
+   -> TCP server (dikontrol dari GUI tray, potato_server.exe)
+   -> adb reverse (tunnel lewat kabel USB, otomatis saat device terdeteksi)
    -> Android app (ExoPlayer decode + render)
 ```
 
@@ -60,13 +73,19 @@ Salin nama device audio yang muncul (mis. `Stereo Mix (Realtek Audio)`)
 ke `config.json` yang otomatis dibuat di folder yang sama, field `audio_device`.
 
 ### Menjalankan
-1. Buka **OBS** > Start Virtual Camera (agar preview OBS jadi "kamera" yang bisa
-   ditangkap ffmpeg — atau langsung capture layar penuh, sudah default lewat
-   `gdigrab`, sesuaikan kalau ingin capture window OBS spesifik saja).
-2. Sambungkan HP ke PC lewat kabel USB, pastikan USB debugging aktif.
-3. Jalankan `PotatoMonitorDeskServer.exe`.
-   Script otomatis: cek ffmpeg & adb, deteksi HP, pasang `adb reverse`,
-   lalu mulai streaming dan menunggu koneksi dari app Android.
+1. Sambungkan HP ke PC lewat kabel USB, pastikan USB debugging aktif & sudah
+   di-authorize (akan muncul dialog "Allow USB debugging" di HP saat pertama
+   kali connect ke PC ini).
+2. Jalankan `PotatoMonitorDeskServer.exe`. Window kecil akan muncul:
+   - Label **USB** otomatis jadi "Terhubung" + nama device begitu HP terdeteksi
+     (adb reverse dipasang otomatis di belakang layar, tidak perlu command manual).
+   - Geser **saklar Streaming** ke ON untuk mulai capture layar+audio & kirim
+     ke HP. Geser ke OFF untuk berhenti sementara tanpa menutup aplikasi.
+3. Tutup window (tombol X) kalau mau app tetap jalan di background — cari
+   icon di system tray untuk buka lagi kapan saja, atau klik kanan > Keluar
+   untuk benar-benar mematikan aplikasi.
+4. Buka app **Potato Monitor Desk** di HP — begitu saklar ON, gambar+suara
+   PC langsung tampil di HP.
 
 ---
 
