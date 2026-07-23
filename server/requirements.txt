@@ -1,0 +1,9 @@
+# potato_server.py hanya memakai Python standard library (subprocess, json, os, shutil).
+# Tidak ada dependency pip tambahan yang wajib.
+#
+# Yang WAJIB ada di PATH sistem (bukan lewat pip):
+#   - ffmpeg   -> https://ffmpeg.org/download.html
+#   - adb (Android Platform Tools) -> https://developer.android.com/tools/releases/platform-tools
+#
+# Untuk build .exe, install pyinstaller:
+pyinstaller>=6.0
