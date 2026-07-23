@@ -56,9 +56,17 @@ Project ini punya 2 bagian:
 
 ```bat
 cd server
-pip install -r requirements.txt
+py -m pip install -r requirements.txt
 build_exe.bat
 ```
+
+> **Kalau muncul error `'pip' is not recognized...`**: ini isu umum di installer
+> Python versi baru ("Python Install Manager" dari python.org) yang kadang
+> tidak menaruh `pip.exe` langsung ke PATH. Selalu pakai `py -m pip ...`
+> (bukan `pip ...` langsung) — cara ini selalu berhasil selama `py --version`
+> sudah bisa jalan di Command Prompt. Kalau `py` juga belum kedetect, buka
+> Command Prompt **baru** (tutup yang lama) supaya PATH ter-refresh setelah
+> instalasi Python.
 
 Hasil: `server\dist\PotatoMonitorDeskServer.exe`
 
