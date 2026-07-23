@@ -26,6 +26,17 @@ import tkinter as tk
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
 
+
+def resource_path(filename: str) -> str:
+    """Cari file aset (icon.ico/icon.png) baik saat dijalankan sebagai skrip
+    Python biasa maupun saat sudah dibundel jadi .exe oleh PyInstaller."""
+    if hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS  # folder sementara tempat PyInstaller extract data
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, filename)
+
+
 DEFAULT_CONFIG = {
     "audio_device": "Stereo Mix (Realtek Audio)",
     "video_bitrate": "3M",
@@ -235,6 +246,7 @@ class App:
         root.geometry("360x260")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self._set_window_icon()
 
         tk.Label(root, text="Potato Monitor Desk", font=("Segoe UI", 14, "bold")).pack(pady=(16, 4))
         tk.Label(root, text="Preview layar + suara PC ke HP lewat USB",
@@ -260,6 +272,13 @@ class App:
 
         self.manager = StreamManager(self.cfg, self.on_status_change)
         self._setup_tray()
+
+    # ---------- icon ----------
+    def _set_window_icon(self):
+        try:
+            self.root.iconbitmap(resource_path("icon.ico"))
+        except Exception:
+            pass  # aman diabaikan kalau file icon belum ada / platform non-Windows
 
     # ---------- UI callbacks ----------
     def on_toggle(self, is_on):
@@ -291,16 +310,21 @@ class App:
     def _setup_tray(self):
         try:
             import pystray
-            from PIL import Image, ImageDraw
+            from PIL import Image
         except ImportError:
             self.tray_icon = None
             return
 
         def make_image():
-            img = Image.new("RGB", (64, 64), "#8d6e63")
-            d = ImageDraw.Draw(img)
-            d.ellipse((8, 8, 56, 56), fill="#efebe9")
-            return img
+            try:
+                return Image.open(resource_path("icon.png"))
+            except Exception:
+                # fallback kalau icon.png tidak ditemukan, tetap jalan tanpa crash
+                from PIL import Image as _Image, ImageDraw as _ImageDraw
+                img = _Image.new("RGB", (64, 64), "#8d6e63")
+                d = _ImageDraw.Draw(img)
+                d.ellipse((8, 8, 56, 56), fill="#efebe9")
+                return img
 
         def on_show(_icon, _item):
             self.root.after(0, self.show_window)

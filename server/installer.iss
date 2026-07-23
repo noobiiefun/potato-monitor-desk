@@ -20,6 +20,7 @@ DefaultDirName={autopf}\PotatoMonitorDesk
 DefaultGroupName=Potato Monitor Desk
 DisableProgramGroupPage=yes
 OutputBaseFilename=PotatoMonitorDeskServerSetup
+SetupIconFile=icon.ico
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64

@@ -1,5 +1,7 @@
 # Potato Monitor Desk
 
+![Potato Monitor Desk](logo.png)
+
 Preview layar + suara PC ke HP Android lewat kabel USB — versi ringan ala
 spacedesk, tapi **tanpa driver display virtual** (bukan extend monitor asli,
 melainkan mirror/preview layar PC ke HP dengan latensi rendah).
@@ -162,3 +164,21 @@ tekan Back.
   untuk stream + satu untuk kontrol). Untuk banyak HP sekaligus, jalankan
   beberapa instance server dengan `port`/`control_port` berbeda per instance,
   dan pastikan `adb -s <serial> reverse ...` dipasang untuk device masing-masing.
+
+---
+
+## Logo & icon
+
+Semua aset di bawah sudah digenerate dari `logo.png` (logo utama) dan sudah
+otomatis terpakai — tidak perlu diedit manual kecuali mau ganti desain:
+
+- `server/icon.ico` — icon file `.exe`, taskbar, dan shortcut installer.
+- `server/icon.png` — dipakai runtime untuk tray icon & title bar window.
+- `client/app/src/main/res/mipmap-*/ic_launcher.png` (+ `_round`) — icon app
+  di launcher HP, sudah digenerate untuk semua density (mdpi–xxxhdpi).
+- `client/app/src/main/res/drawable/potato_logo.png` — ditampilkan di
+  `SplashActivity` (splash screen ~1.2 detik) sebelum masuk ke layar utama.
+
+Kalau nanti ganti logo, tinggal replace `logo.png` di root project lalu
+generate ulang turunannya (resize ke ukuran yang sama seperti di atas) — atau
+minta saya bantu generate ulang.
