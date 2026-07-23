@@ -64,13 +64,35 @@ Hasil: `server\dist\PotatoMonitorDeskServer.exe`
 Buka `server\installer.iss` dengan **Inno Setup Compiler**, klik Compile.
 Hasil: `Output\PotatoMonitorDeskServerSetup.exe`
 
-### Sebelum jalan pertama kali
-Cek nama device audio yang benar:
+### Sebelum jalan pertama kali — cek nama device audio
+Versi GUI tidak punya perintah `--list-devices` lagi (karena tidak ada jendela
+console). Untuk melihat nama persis device audio yang dikenali ffmpeg, buka
+Command Prompt lalu jalankan:
 ```bat
-PotatoMonitorDeskServer.exe --list-devices
+ffmpeg -hide_banner -list_devices true -f dshow -i dummy
 ```
-Salin nama device audio yang muncul (mis. `Stereo Mix (Realtek Audio)`)
-ke `config.json` yang otomatis dibuat di folder yang sama, field `audio_device`.
+Cari nama device di bagian **"DirectShow audio devices"** (contoh:
+`Stereo Mix (Realtek Audio)` atau `CABLE Output (VB-Audio Virtual Cable)`).
+Salin nama itu persis ke `config.json` yang otomatis dibuat di folder yang
+sama dengan `PotatoMonitorDeskServer.exe`, di field `"audio_device"`.
+
+### Isi `config.json`
+Dibuat otomatis saat pertama kali dijalankan, berisi:
+```json
+{
+  "audio_device": "Stereo Mix (Realtek Audio)",
+  "video_bitrate": "3M",
+  "audio_bitrate": "128k",
+  "port": 9999,
+  "control_port": 9998,
+  "resolution": "1280x720",
+  "framerate": 30
+}
+```
+`port` untuk stream video+audio, `control_port` untuk menerima perintah ganti
+kualitas dari HP (lihat bagian "Fitur client" di bawah). `resolution` dan
+`video_bitrate` akan otomatis ter-update kalau kamu ganti kualitas dari app
+Android — tidak perlu diedit manual kecuali mau atur nilai awal default.
 
 ### Menjalankan
 1. Sambungkan HP ke PC lewat kabel USB, pastikan USB debugging aktif & sudah
@@ -136,6 +158,7 @@ tekan Back.
   stabil — aman naikkan bitrate kalau kabel & port USB mendukung.
 - **Capture window OBS spesifik** (bukan seluruh layar): ganti input `gdigrab`
   di `build_ffmpeg_cmd()` dari `-i desktop` jadi `-i title=<judul window OBS>`.
-- **Multi-device**: saat ini didesain untuk 1 HP per server (satu port TCP).
-  Untuk banyak HP sekaligus, jalankan beberapa instance server dengan port
-  berbeda + `adb reverse` per device (`adb -s <serial> reverse ...`).
+- **Multi-device**: saat ini didesain untuk 1 HP per server (satu port TCP
+  untuk stream + satu untuk kontrol). Untuk banyak HP sekaligus, jalankan
+  beberapa instance server dengan `port`/`control_port` berbeda per instance,
+  dan pastikan `adb -s <serial> reverse ...` dipasang untuk device masing-masing.
