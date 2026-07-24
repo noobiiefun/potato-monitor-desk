@@ -1,4 +1,3 @@
-- [x] Fix `app/build.gradle` syntax error (Groovy vs Kotlin DSL)
-- [/] Update dependencies to latest stable versions
-- [ ] Run Gradle Sync and verify
-- [ ] Verify build via `./gradlew assembleDebug`
+- [x] Configure signing for release builds in `app/build.gradle`
+- [x] Update `NotificationFilterService` in `AndroidManifest.xml`
+- [/] Run Gradle Sync and verify build

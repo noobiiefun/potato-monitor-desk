@@ -41,7 +41,8 @@
         <service
             android:name=".NotificationFilterService"
             android:label="Potato Monitor Desk - Filter Notifikasi"
-            android:exported="false"
+            android:description="@string/notif_filter_desc"
+            android:exported="true"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

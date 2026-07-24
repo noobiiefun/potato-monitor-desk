@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Potato Monitor Desk</string>
+    <string name="notif_filter_desc">Digunakan untuk menyunyikan notifikasi saat aplikasi aktif agar tidak mengganggu live streaming.</string>
 </resources>
