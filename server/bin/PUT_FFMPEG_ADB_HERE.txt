@@ -1,0 +1,33 @@
+TARUH 4 FILE INI DI FOLDER server/bin/ INI (folder yang sama dengan file ini),
+SEBELUM MENJALANKAN build_exe.bat. Setelah itu, otomatis ikut terbundel ke
+dalam PotatoMonitorDeskServer.exe -- end user tidak perlu install apa pun.
+
+1. ffmpeg.exe
+   Download dari: https://www.gyan.dev/ffmpeg/builds/
+   Ambil "ffmpeg-release-essentials.zip", extract, ambil file
+   bin\ffmpeg.exe dari dalamnya, taruh di sini.
+
+2. adb.exe
+3. AdbWinApi.dll
+4. AdbWinUsbApi.dll
+   Ketiganya dari: https://developer.android.com/tools/releases/platform-tools
+   Download "SDK Platform-Tools for Windows", extract, ambil ketiga file
+   itu (ada di root folder platform-tools), taruh di sini.
+   (adb.exe butuh kedua .dll itu di folder yang sama supaya bisa jalan.)
+
+Setelah 4 file ini ada di folder ini, folder server/bin/ akan berisi:
+  bin/
+    ffmpeg.exe
+    adb.exe
+    AdbWinApi.dll
+    AdbWinUsbApi.dll
+
+Lalu jalankan build_exe.bat seperti biasa -- keempatnya otomatis ikut
+terbundel ke dalam PotatoMonitorDeskServer.exe (lihat --add-data di
+build_exe.bat). Hapus file .txt ini kalau mau, tidak ikut ke-bundle.
+
+Catatan lisensi: ffmpeg (build essentials, LGPL) dan adb/Platform-Tools
+(Android SDK, gratis dari Google) keduanya boleh didistribusikan ulang
+bersama aplikasi untuk penggunaan seperti ini -- ini juga cara yang sama
+dipakai banyak aplikasi open-source lain (mis. scrcpy) yang bundle adb.exe
+langsung ke dalam distribusinya.

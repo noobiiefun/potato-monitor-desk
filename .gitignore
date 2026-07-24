@@ -1,0 +1,23 @@
+# Binary tools yang ditaruh manual (ukurannya besar, tidak perlu masuk git)
+server/bin/*.exe
+server/bin/*.dll
+
+# Hasil build
+server/dist/
+server/build/
+server/*.spec
+server/Output/
+server/config.json
+
+# Android
+client/.gradle/
+client/app/build/
+client/build/
+client/local.properties
+client/.idea/
+client/*.iml
+
+# Umum
+__pycache__/
+*.pyc
+.DS_Store

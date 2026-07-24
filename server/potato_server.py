@@ -9,10 +9,11 @@ Jalan di background (system tray), dengan window sederhana berisi:
 Menutup window (tombol X) TIDAK menutup aplikasi -> minimize ke tray.
 Untuk benar-benar keluar: klik kanan icon tray > Keluar.
 
-Prasyarat di PC:
-  - ffmpeg ada di PATH
-  - adb (Android Platform Tools) ada di PATH
-  - Audio loopback aktif (Stereo Mix / VB-Audio Virtual Cable)
+Prasyarat di PC (kalau pakai installer resmi, semua sudah otomatis terbundel,
+tidak perlu install apa pun secara manual):
+  - ffmpeg & adb dibundel otomatis dari folder server/bin/ saat build
+  - Audio loopback aktif (Stereo Mix / VB-Audio Virtual Cable) -- ini satu-
+    satunya hal yang tetap perlu diaktifkan manual di Windows Sound Settings
 """
 
 import json
@@ -23,6 +24,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from typing import Optional
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
 
@@ -35,6 +37,21 @@ def resource_path(filename: str) -> str:
     else:
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, filename)
+
+
+def resolve_tool(path_no_ext: str, exe_name: str) -> Optional[str]:
+    """Cari ffmpeg/adb: prioritas pertama folder 'bin' yang dibundel bareng
+    exe (hasil --add-data saat build), baru fallback ke PATH sistem kalau
+    user menjalankan potato_server.py langsung sebagai skrip Python tanpa
+    bundle. Return None kalau dua-duanya tidak ketemu."""
+    bundled = resource_path(os.path.join("bin", exe_name))
+    if os.path.isfile(bundled):
+        return bundled
+    return shutil.which(path_no_ext)
+
+
+FFMPEG_PATH = resolve_tool("ffmpeg", "ffmpeg.exe")
+ADB_PATH = resolve_tool("adb", "adb.exe")
 
 
 DEFAULT_CONFIG = {
@@ -61,7 +78,7 @@ def load_config():
 def build_ffmpeg_cmd(cfg):
     w, h = cfg["resolution"].split("x")
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        FFMPEG_PATH, "-hide_banner", "-loglevel", "error",
         "-f", "gdigrab", "-framerate", str(cfg["framerate"]), "-i", "desktop",
         "-f", "dshow", "-i", f"audio={cfg['audio_device']}",
         "-vf", f"scale={w}:{h}",
@@ -166,7 +183,7 @@ class StreamManager:
     # ---------- adb polling ----------
     def _get_connected_device(self):
         try:
-            result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=3)
+            result = subprocess.run([ADB_PATH, "devices"], capture_output=True, text=True, timeout=3)
         except Exception:
             return None
         lines = [l for l in result.stdout.splitlines()[1:] if l.strip() and "device" in l]
@@ -177,7 +194,7 @@ class StreamManager:
     def _get_device_model(self, serial):
         try:
             result = subprocess.run(
-                ["adb", "-s", serial, "shell", "getprop", "ro.product.model"],
+                [ADB_PATH, "-s", serial, "shell", "getprop", "ro.product.model"],
                 capture_output=True, text=True, timeout=3
             )
             return result.stdout.strip() or serial
@@ -189,9 +206,9 @@ class StreamManager:
             serial = self._get_connected_device()
             if serial:
                 if not self._usb_connected or serial != self._reversed_serial:
-                    subprocess.run(["adb", "-s", serial, "reverse",
+                    subprocess.run([ADB_PATH, "-s", serial, "reverse",
                                      f"tcp:{self.cfg['port']}", f"tcp:{self.cfg['port']}"])
-                    subprocess.run(["adb", "-s", serial, "reverse",
+                    subprocess.run([ADB_PATH, "-s", serial, "reverse",
                                      f"tcp:{self.cfg['control_port']}", f"tcp:{self.cfg['control_port']}"])
                     self._reversed_serial = serial
                 self._usb_connected = True
@@ -359,16 +376,18 @@ class App:
 
 def check_prereqs():
     missing = []
-    if shutil.which("ffmpeg") is None:
+    if FFMPEG_PATH is None:
         missing.append("ffmpeg")
-    if shutil.which("adb") is None:
+    if ADB_PATH is None:
         missing.append("adb")
     if missing:
         import tkinter.messagebox as mb
         mb.showerror(
             "Potato Monitor Desk",
-            f"Tidak ditemukan di PATH: {', '.join(missing)}.\n"
-            "Install dulu lalu tambahkan ke PATH sebelum menjalankan aplikasi ini."
+            f"Tidak ditemukan: {', '.join(missing)}.\n"
+            "Kalau kamu pakai versi installer/exe resmi, ini seharusnya sudah "
+            "otomatis terbundel -- coba install ulang. Kalau menjalankan dari "
+            "source langsung, pastikan ffmpeg & adb ada di PATH sistem."
         )
         sys.exit(1)
 

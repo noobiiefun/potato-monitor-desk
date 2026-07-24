@@ -4,6 +4,8 @@ pystray>=0.19.5
 Pillow>=10.0.0
 pyinstaller>=6.0
 
-# Yang WAJIB ada di PATH sistem (bukan lewat pip):
-#   - ffmpeg   -> https://ffmpeg.org/download.html
-#   - adb (Android Platform Tools) -> https://developer.android.com/tools/releases/platform-tools
+# Yang WAJIB ditaruh di folder bin/ (bukan lewat pip, lihat bin/PUT_FFMPEG_ADB_HERE.txt):
+#   - ffmpeg.exe   -> https://www.gyan.dev/ffmpeg/builds/
+#   - adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll -> https://developer.android.com/tools/releases/platform-tools
+# (Kalau menjalankan potato_server.py langsung sebagai skrip tanpa mengisi
+#  bin/, aplikasi otomatis fallback ke ffmpeg/adb yang ada di PATH sistem.)

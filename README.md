@@ -37,20 +37,29 @@ Project ini punya 2 bagian:
 
 ## 1. Build Server (Windows)
 
-### Prasyarat
+Sekarang `ffmpeg` dan `adb` **dibundel langsung ke dalam installer** — end
+user (termasuk kamu sendiri) tinggal jalankan installer-nya, tidak perlu
+install atau atur PATH manual sama sekali. Yang perlu setup manual sekali
+hanya di sisi developer (kamu) saat **membangun** installer-nya.
+
+### Prasyarat (hanya untuk build, bukan untuk end-user)
 1. Install **Python 3.10+** (centang "Add to PATH" saat install).
-2. Install **ffmpeg** dan tambahkan folder `bin`-nya ke PATH sistem.
-   Cek dengan buka Command Prompt lalu ketik `ffmpeg -version`.
-3. Install **Android Platform Tools** (berisi `adb`) dan tambahkan ke PATH.
-   Cek dengan `adb version`.
-4. Aktifkan audio loopback:
+2. Download 4 file berikut, taruh di folder `server/bin/` (baca
+   `server/bin/PUT_FFMPEG_ADB_HERE.txt` untuk link & detailnya):
+   - `ffmpeg.exe`
+   - `adb.exe`, `AdbWinApi.dll`, `AdbWinUsbApi.dll`
+   File-file ini otomatis ikut ter-bundle ke dalam `.exe` saat build —
+   dilakukan **sekali saja**, tidak perlu diulang tiap kali build ulang.
+3. Install Inno Setup untuk bikin installer:
+   https://jrsoftware.org/isdl.php
+4. (Khusus di PC kamu sendiri untuk pakai fitur audio) Aktifkan audio loopback:
    - Klik kanan icon speaker > Sound settings > More sound settings >
      tab Recording > klik kanan area kosong > "Show Disabled Devices" >
      enable **Stereo Mix** (kalau ada).
    - Kalau tidak ada Stereo Mix, install **VB-Audio Virtual Cable** (gratis)
      dan set sebagai default output, lalu pakai itu sebagai `audio_device`.
-5. (Opsional, untuk build .exe) install Inno Setup:
-   https://jrsoftware.org/isdl.php
+   > Ini satu-satunya langkah yang memang tidak bisa di-otomatisasi/dibundel,
+   > karena tergantung driver audio masing-masing PC.
 
 ### Langkah build
 
@@ -60,6 +69,10 @@ py -m pip install -r requirements.txt
 build_exe.bat
 ```
 
+`build_exe.bat` otomatis cek dulu apakah `bin\ffmpeg.exe` dan `bin\adb.exe`
+sudah ada — kalau belum, akan berhenti dan mengingatkan kamu untuk
+menaruhnya dulu sebelum lanjut build.
+
 > **Kalau muncul error `'pip' is not recognized...`**: ini isu umum di installer
 > Python versi baru ("Python Install Manager" dari python.org) yang kadang
 > tidak menaruh `pip.exe` langsung ke PATH. Selalu pakai `py -m pip ...`
@@ -68,23 +81,34 @@ build_exe.bat
 > Command Prompt **baru** (tutup yang lama) supaya PATH ter-refresh setelah
 > instalasi Python.
 
-Hasil: `server\dist\PotatoMonitorDeskServer.exe`
+Hasil: `server\dist\PotatoMonitorDeskServer.exe` — file ini **sudah
+self-contained** (ffmpeg & adb ada di dalamnya), tidak butuh dependency
+eksternal apa pun lagi.
 
-### Build installer (opsional)
+### Build installer
+
 Buka `server\installer.iss` dengan **Inno Setup Compiler**, klik Compile.
 Hasil: `Output\PotatoMonitorDeskServerSetup.exe`
 
+Installer ini yang dibagikan ke user (atau dipakai sendiri): Next → Next →
+Finish, otomatis membuat shortcut di **Start Menu** dan **Desktop**
+(centang "Buat shortcut di Desktop" saat instalasi, sudah tercentang
+default), dan begitu dijalankan, ffmpeg & adb sudah langsung siap pakai —
+tidak ada lagi dialog "Tidak ditemukan di PATH".
+
 ### Sebelum jalan pertama kali — cek nama device audio
-Versi GUI tidak punya perintah `--list-devices` lagi (karena tidak ada jendela
-console). Untuk melihat nama persis device audio yang dikenali ffmpeg, buka
+Untuk melihat nama persis device audio yang dikenali ffmpeg, buka
 Command Prompt lalu jalankan:
 ```bat
 ffmpeg -hide_banner -list_devices true -f dshow -i dummy
 ```
+(pakai `ffmpeg` dari instalasi manapun yang ada di PC kamu untuk sekadar
+melihat daftar nama device — tidak harus yang di folder `bin/`).
 Cari nama device di bagian **"DirectShow audio devices"** (contoh:
 `Stereo Mix (Realtek Audio)` atau `CABLE Output (VB-Audio Virtual Cable)`).
-Salin nama itu persis ke `config.json` yang otomatis dibuat di folder yang
-sama dengan `PotatoMonitorDeskServer.exe`, di field `"audio_device"`.
+Salin nama itu persis ke `config.json` yang otomatis dibuat di folder
+instalasi (sama dengan `PotatoMonitorDeskServer.exe`), di field
+`"audio_device"`.
 
 ### Isi `config.json`
 Dibuat otomatis saat pertama kali dijalankan, berisi:
