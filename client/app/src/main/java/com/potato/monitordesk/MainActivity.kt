@@ -208,6 +208,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------- preview stream (dari PC) ----------
+    @androidx.media3.common.util.UnstableApi
     private fun startStream() {
         statusText.text = "Menghubungkan ke PC..."
 

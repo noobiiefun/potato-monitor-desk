@@ -9,8 +9,8 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.pedro.rtplibrary.rtmp.RtmpDisplay
-import com.pedro.rtplibrary.util.ConnectCheckerRtmp
+import com.pedro.common.ConnectChecker
+import com.pedro.library.rtmp.RtmpDisplay
 
 /**
  * Callback status live streaming ke MainActivity.
@@ -37,7 +37,7 @@ interface LiveStatusListener {
  * https://github.com/pedroSG94/RootEncoder/tree/master/app/src/main/java/com/pedro/streamer/displayexample
  * untuk menyesuaikan nama class/paket persis versi kamu.
  */
-class LiveStreamService : Service(), ConnectCheckerRtmp {
+class LiveStreamService : Service(), ConnectChecker {
 
     companion object {
         private const val CHANNEL_ID = "potato_live_channel"
@@ -119,28 +119,32 @@ class LiveStreamService : Service(), ConnectCheckerRtmp {
         super.onDestroy()
     }
 
-    // ---------- ConnectCheckerRtmp ----------
-    override fun onConnectionSuccessRtmp() {
+    // ---------- ConnectChecker ----------
+    override fun onConnectionStarted(url: String) {
+        // no-op
+    }
+
+    override fun onConnectionSuccess() {
         listener?.onLiveConnected()
     }
 
-    override fun onConnectionFailedRtmp(reason: String) {
+    override fun onConnectionFailed(reason: String) {
         listener?.onLiveFailed(reason)
     }
 
-    override fun onNewBitrateRtmp(bitrate: Long) {
+    override fun onNewBitrate(bitrate: Long) {
         // bisa dipakai nanti untuk indikator kualitas koneksi
     }
 
-    override fun onDisconnectRtmp() {
+    override fun onDisconnect() {
         listener?.onLiveDisconnected()
     }
 
-    override fun onAuthErrorRtmp() {
+    override fun onAuthError() {
         listener?.onLiveFailed("Autentikasi RTMP gagal (cek stream key)")
     }
 
-    override fun onAuthSuccessRtmp() {
+    override fun onAuthSuccess() {
         // no-op
     }
 }

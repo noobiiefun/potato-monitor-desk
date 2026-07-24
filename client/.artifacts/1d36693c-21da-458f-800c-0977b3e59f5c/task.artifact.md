@@ -1,0 +1,4 @@
+- [x] Fix `app/build.gradle` syntax error (Groovy vs Kotlin DSL)
+- [/] Update dependencies to latest stable versions
+- [ ] Run Gradle Sync and verify
+- [ ] Verify build via `./gradlew assembleDebug`
