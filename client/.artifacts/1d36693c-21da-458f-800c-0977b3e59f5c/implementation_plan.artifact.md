@@ -1,28 +1,39 @@
-# Implementation Plan - Fix Installation and Blocking Issues
+# Implementation Plan - Prevent Play Protect Blocking
 
-The user reports that the application fails to install and is "blocked" (terblokir). This is commonly caused by Play Protect heuristics flagging sensitive permissions (`MediaProjection`, `NotificationListener`), signature conflicts, or unsigned release builds.
+Aplikasi Anda masih diblokir oleh Play Protect kemungkinan besar karena kombinasi dari izin sensitif (`MediaProjection`, `Record Audio`, `Notification Listener`) dan penandatanganan APK yang belum resmi (masih menggunakan *debug key*).
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Penandatanganan APK (Signing)**: Untuk melewati blokir Play Protect, Anda **WAJIB** membuat file keystore asli (`.jks`) dan mengisi `keystore.properties`. Menggunakan *debug key* pada build "Release" adalah pemicu utama Play Protect menganggap aplikasi tersebut mencurigakan.
+
+> [!WARNING]
+> **Versi AGP**: Anda mengubah versi plugin Android Gradle ke `8.13.2`. Versi ini tidak umum (kemungkinan typo dari `8.3.2` atau `8.5.2`). Saya menyarankan untuk menggunakan versi stabil yang terverifikasi.
 
 ## Proposed Changes
 
 ### Build Configuration
 
-#### [MODIFY] [app/build.gradle](file:///F:/coding/potato-monitor-desk/client/app/build.gradle)
-- Set `signingConfig signingConfigs.debug` for the `release` build type. This ensures that release builds are signed with the debug key and can be installed for testing purposes without needing a production keystore.
-- (Optional) Change `applicationId` to something more unique (e.g., `com.potatodeskhome.monitor`) to avoid potential package name blacklisting by Play Protect.
+#### [MODIFY] [build.gradle](file:///F:/coding/potato-monitor-desk/client/build.gradle)
+- Koreksi versi Android Gradle Plugin ke versi stabil (misal `8.5.0`).
 
-### Manifest Configuration
+#### [MODIFY] [app/build.gradle](file:///F:/coding/potato-monitor-desk/client/app/build.gradle)
+- Aktifkan `minifyEnabled true` dan `shrinkResources true` pada build `release`. Ini membuat aplikasi lebih ramping dan terlihat seperti aplikasi produksi profesional di mata algoritma Play Protect.
+
+### Manifest and Resources
 
 #### [MODIFY] [AndroidManifest.xml](file:///F:/coding/potato-monitor-desk/client/app/src/main/AndroidManifest.xml)
-- Set `android:exported="true"` for `NotificationFilterService`. While `android:permission` protects it, system services often require it to be exported to bind correctly via intent filters on some Android versions.
-- Add `android:description` or improve metadata to make the app look more "legitimate" to Play Protect heuristics.
+- Tambahkan metadata pendukung dan pastikan semua deklarasi layanan sudah optimal.
+- Pastikan `android:allowBackup="false"` jika tidak diperlukan, untuk meningkatkan profil keamanan aplikasi.
+
+#### [MODIFY] [strings.xml](file:///F:/coding/potato-monitor-desk/client/app/src/main/res/values/strings.xml)
+- Tambahkan deskripsi aplikasi yang lebih mendalam untuk ditampilkan di pengaturan sistem.
 
 ## Verification Plan
 
 ### Automated Tests
-- Run `gradle_sync`.
-- Run `./gradlew assembleDebug` and `./gradlew assembleRelease` to ensure both build types are signed and buildable.
+- Menjalankan `gradle_sync` untuk memastikan versi plugin valid.
+- Menjalankan `./gradlew assembleRelease` untuk memastikan build berhasil dengan optimasi R8.
 
 ### Manual Verification
-- **Install APK**: Attempt to install the generated APK on a device.
-- **Play Protect**: If a "Blocked by Play Protect" dialog appears, verify that it can be bypassed via "Install anyway".
-- **Restricted Settings**: On Android 14+, if Notification Access is blocked, verify the "Allow restricted settings" workaround.
+- Pengguna harus memastikan file `release-keystore.jks` dan `keystore.properties` sudah ada di folder root sebelum melakukan build final.
