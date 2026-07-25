@@ -22,11 +22,20 @@ Arsitektur:
 
 ```
 Layar & audio PC (gdigrab + Stereo Mix/VB-Cable)
-   -> ffmpeg (encode H.264 + AAC, mux MPEG-TS)
-   -> TCP server (dikontrol dari GUI tray, potato_server.exe)
+   -> ffmpeg (encode H.264 + AAC, mux MPEG-TS, output ke stdout)
+   -> TsBroadcastServer (Python, port 9999) -- broadcast byte yang sama
+      ke semua klien yang connect bersamaan
    -> adb reverse (tunnel lewat kabel USB, otomatis saat device terdeteksi)
-   -> Android app (ExoPlayer decode + render)
+   -> Android app, 2 konsumen paralel dari koneksi TCP yang sama:
+        a) ExoPlayer (decode + render) -> preview di layar HP
+        b) RelayStreamService (demux TS -> RtmpClient) -> RTMP (YouTube dkk),
+           TANPA decode/re-encode dan TANPA capture layar HP
 ```
+
+Poin penting: livestreaming ke YouTube **bukan** hasil merekam layar HP.
+HP cuma meneruskan (relay) H.264/AAC yang sudah di-encode PC langsung ke
+RTMP. Preview di layar HP (ExoPlayer) itu fitur terpisah buat kamu pantau,
+sifatnya opsional — live tetap jalan di background walau app di-minimize.
 
 Project ini punya 2 bagian:
 
@@ -123,10 +132,12 @@ Dibuat otomatis saat pertama kali dijalankan, berisi:
   "framerate": 30
 }
 ```
-`port` untuk stream video+audio, `control_port` untuk menerima perintah ganti
-kualitas dari HP (lihat bagian "Fitur client" di bawah). `resolution` dan
-`video_bitrate` akan otomatis ter-update kalau kamu ganti kualitas dari app
-Android — tidak perlu diedit manual kecuali mau atur nilai awal default.
+`port` untuk stream video+audio (sekarang bisa melayani beberapa koneksi
+sekaligus lewat `TsBroadcastServer` — mis. preview + relay live berjalan
+bersamaan), `control_port` untuk menerima perintah ganti kualitas dari HP
+(lihat bagian "Fitur client" di bawah). `resolution` dan `video_bitrate`
+akan otomatis ter-update kalau kamu ganti kualitas dari app Android — tidak
+perlu diedit manual kecuali mau atur nilai awal default.
 
 ### Menjalankan
 1. Sambungkan HP ke PC lewat kabel USB, pastikan USB debugging aktif & sudah
@@ -147,9 +158,30 @@ Android — tidak perlu diedit manual kecuali mau atur nilai awal default.
 
 ## 2. Build Client (Android)
 
+### Setup signing (sekali saja, sebelum build release)
+APK release **wajib** ditandatangani dengan keystore rilis sendiri (bukan
+debug key) — APK yang ditandatangani debug key adalah salah satu sinyal
+terbesar yang bikin Google Play Protect menganggap app "tidak dikenal/
+berisiko" saat sideload. Sudah disiapkan `keystore.properties.example` di
+root `client/`:
+1. Generate keystore (sekali saja):
+   ```bash
+   keytool -genkeypair -v -keystore app/release-keystore.jks \
+     -alias potato-monitor-desk -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. Copy `keystore.properties.example` jadi `keystore.properties`, isi
+   password & alias sesuai yang kamu pakai di atas.
+3. **Jangan pernah commit** `keystore.properties` atau `*.jks` ke git — sudah
+   masuk `.gitignore`, tapi tetap dicek ulang sebelum push kalau baru clone.
+
+Build release APK: `Build > Generate Signed Bundle/APK` di Android Studio,
+atau `./gradlew assembleRelease`.
+
+### Langkah build
 1. Buka **Android Studio** > Open > pilih folder `client/`.
-2. Biarkan Gradle sync selesai (akan download dependency Media3 ExoPlayer,
-   perlu koneksi internet saat build pertama kali).
+2. Biarkan Gradle sync selesai (akan download dependency Media3 ExoPlayer +
+   Media3 Extractor + RootEncoder, perlu koneksi internet saat build pertama
+   kali).
 3. Sambungkan HP Android (USB debugging aktif) atau pakai emulator.
 4. Klik Run ▶ untuk install & buka app "Potato Monitor Desk" di HP.
 
@@ -159,37 +191,44 @@ tampil status "Menghubungkan..." dan tombol **Reconnect** untuk coba lagi.
 
 ---
 
-## Live streaming langsung dari app (tanpa app terpisah)
+## Live streaming langsung dari app (relay, tanpa capture layar HP)
 
-Potato Monitor Desk sekarang bisa live-streaming isi layar HP (yaitu mirror
-PC yang sedang tampil) langsung ke RTMP — YouTube Live, Facebook Live, atau
-server RTMP sendiri — pakai library open-source **RootEncoder**. Ini
-menghilangkan kebutuhan buka app live-streaming terpisah yang bisa saling
-mematikan proses saat minimize/switch app.
+Potato Monitor Desk bisa live-streaming tampilan PC langsung ke RTMP —
+YouTube Live, Facebook Live, atau server RTMP sendiri. Sejak versi ini,
+mekanismenya **bukan** merekam layar HP (tidak pakai `MediaProjection`),
+melainkan **relay**: data H.264/AAC yang sudah di-encode di PC (lewat OBS
+preview / ffmpeg) di-demux dari MPEG-TS lalu dikirim langsung ke RTMP apa
+adanya, tanpa decode dan tanpa re-encode ulang di HP. Ini jauh lebih ringan
+untuk HP kelas Android Go (mis. Xiaomi A3) karena tidak ada beban encoding
+ganda, dan otomatis tidak akan ke-capture popup notifikasi dari HP — karena
+memang tidak ada yang direkam dari layar HP sama sekali.
 
 **Cara pakai:**
 1. Buka ⚙ **Pengaturan** > **Pengaturan Live** > isi *Alamat RTMP* (URL
    server + stream key digabung jadi satu, contoh format YouTube:
    `rtmp://a.rtmp.youtube.com/live2/<stream-key>`), pilih posisi timer LIVE
    (kiri/kanan, atas/bawah), lalu Simpan.
-2. Nyalakan switch **LIVE** di pojok kanan atas.
-3. Android akan minta izin "mulai merekam/streaming layar" (izin
-   MediaProjection) — izinkan sekali.
-4. Live dimulai: badge **🔴 LIVE 00:00:xx** muncul di posisi yang kamu pilih
+2. Nyalakan switch **LIVE** di pojok kanan atas. Tidak ada dialog izin
+   capture layar yang muncul — app langsung connect ke stream PC dan mulai
+   mem-forward ke RTMP.
+3. Live dimulai: badge **🔴 LIVE 00:00:xx** muncul di posisi yang kamu pilih
    dan bertambah setiap detik. Kalau tidak sedang live (cuma mirror layar
    biasa), badge ini otomatis tersembunyi.
-5. Matikan switch **LIVE** kapan saja untuk stop stream tanpa menutup app.
+4. Matikan switch **LIVE** kapan saja untuk stop stream tanpa menutup app.
+   Preview layar (poin 1 di atas) boleh tetap dibuka atau di-minimize —
+   dua-duanya jalan independen.
 
-Audio yang dikirim ke live default mengambil **audio internal (system audio)
-HP** — yaitu suara PC yang sedang diputar lewat speaker/headset HP — bukan
-mikrofon, supaya tidak ada noise ruangan/gema. Ini butuh Android 10+; di
-Android lebih lama otomatis fallback ke mikrofon HP.
+Audio yang terkirim ke live adalah **audio yang sama dengan yang di-capture
+di PC** (lewat Stereo Mix/VB-Cable) — bukan mikrofon HP dan bukan audio
+internal HP, karena tidak ada proses capture apa pun yang terjadi di HP.
 
-> Catatan teknis: kode integrasi ini mengikuti API resmi library RootEncoder
-> (`RtmpDisplay`, `ConnectCheckerRtmp`, dst). Kalau versi library yang
-> ter-download Gradle sedikit berbeda dan Android Studio menunjukkan error
-> import, cek contoh resmi di halaman GitHub RootEncoder (folder
-> `displayexample`) untuk menyesuaikan nama class/package persis versi kamu.
+> Catatan teknis: implementasi relay ini pakai `androidx.media3:media3-extractor`
+> (`TsExtractor`) untuk demux MPEG-TS jadi access unit mentah, lalu dikirim
+> lewat class low-level `com.pedro.rtmp.rtmp.RtmpClient` dari library
+> RootEncoder (bukan lewat `RtmpDisplay`/`MediaProjection` seperti versi
+> sebelumnya). Server harus bisa melayani 2 koneksi TCP bersamaan di port
+> yang sama (lihat `TsBroadcastServer` di server) — satu untuk preview,
+> satu untuk relay ini.
 
 ---
 
