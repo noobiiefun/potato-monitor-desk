@@ -85,8 +85,76 @@ def build_ffmpeg_cmd(cfg):
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-b:v", cfg["video_bitrate"], "-pix_fmt", "yuv420p", "-g", str(cfg["framerate"]),
         "-c:a", "aac", "-b:a", cfg["audio_bitrate"], "-ar", "44100",
-        "-f", "mpegts", f"tcp://0.0.0.0:{cfg['port']}?listen=1"
+        "-f", "mpegts", "pipe:1"
     ]
+
+
+class TsBroadcastServer:
+    """Terima 1 sumber MPEG-TS dari stdout ffmpeg, lalu salin (broadcast) byte
+    yang sama ke SEMUA klien TCP yang connect ke port ini secara bersamaan.
+
+    Ini menggantikan cara lama (ffmpeg langsung 'tcp://...?listen=1') yang
+    cuma bisa melayani 1 klien. Sekarang preview di HP (ExoPlayer) dan relay
+    livestream RTMP di HP bisa connect ke port yang sama di saat bersamaan.
+    """
+
+    def __init__(self, port: int):
+        import socket as sk
+        self.port = port
+        self._sk = sk
+        self._clients = []  # list of socket.socket
+        self._clients_lock = threading.Lock()
+        self._server_sock = None
+        self._accept_thread = None
+
+    def start(self):
+        srv = self._sk.socket(self._sk.AF_INET, self._sk.SOCK_STREAM)
+        srv.setsockopt(self._sk.SOL_SOCKET, self._sk.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", self.port))
+        srv.listen(8)
+        self._server_sock = srv
+        self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._accept_thread.start()
+
+    def _accept_loop(self):
+        while self._server_sock is not None:
+            try:
+                conn, _ = self._server_sock.accept()
+                conn.setsockopt(self._sk.IPPROTO_TCP, self._sk.TCP_NODELAY, 1)
+                with self._clients_lock:
+                    self._clients.append(conn)
+            except OSError:
+                break
+
+    def broadcast(self, chunk: bytes):
+        with self._clients_lock:
+            dead = []
+            for c in self._clients:
+                try:
+                    c.sendall(chunk)
+                except Exception:
+                    dead.append(c)
+            for c in dead:
+                self._clients.remove(c)
+                try:
+                    c.close()
+                except Exception:
+                    pass
+
+    def stop(self):
+        with self._clients_lock:
+            for c in self._clients:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            self._clients.clear()
+        if self._server_sock is not None:
+            try:
+                self._server_sock.close()
+            except Exception:
+                pass
+            self._server_sock = None
 
 
 class ToggleSwitch(tk.Canvas):
@@ -142,6 +210,8 @@ class StreamManager:
         self._usb_connected = False
         self._device_name = ""
         self._reversed_serial = None
+        self._broadcast = TsBroadcastServer(cfg["port"])
+        self._broadcast.start()
         self._poll_thread.start()
         self._control_thread = threading.Thread(target=self._control_server_loop, daemon=True)
         self._control_thread.start()
@@ -242,8 +312,14 @@ class StreamManager:
         while self._want_running:
             cmd = build_ffmpeg_cmd(self.cfg)  # dibangun ulang tiap iterasi agar setting baru terpakai
             try:
-                self._proc = subprocess.Popen(cmd)
+                self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
                 self._notify()
+                stdout = self._proc.stdout
+                while True:
+                    chunk = stdout.read(32 * 1024)
+                    if not chunk:
+                        break
+                    self._broadcast.broadcast(chunk)
                 self._proc.wait()
             except Exception:
                 pass

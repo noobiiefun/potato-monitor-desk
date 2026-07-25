@@ -5,7 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -69,7 +68,7 @@ class MainActivity : AppCompatActivity() {
     private var retryPending = false
 
     // ---------- live streaming state ----------
-    private var liveService: LiveStreamService? = null
+    private var relayService: RelayStreamService? = null
     private var serviceBound = false
     private var liveSeconds = 0
     private var suppressSwitchCallback = false
@@ -84,10 +83,10 @@ class MainActivity : AppCompatActivity() {
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            val binder = service as LiveStreamService.LocalBinder
-            liveService = binder.getService()
-            liveService?.listener = object : LiveStatusListener {
-                override fun onLiveConnected() {
+            val binder = service as RelayStreamService.LocalBinder
+            relayService = binder.getService()
+            relayService?.listener = object : RelayStatusListener {
+                override fun onRelayConnected() {
                     mainHandler.post {
                         liveSeconds = 0
                         liveBadge.visibility = View.VISIBLE
@@ -97,7 +96,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                override fun onLiveFailed(reason: String) {
+                override fun onRelayFailed(reason: String) {
                     mainHandler.post {
                         setSwitchStateSilently(false)
                         liveBadge.visibility = View.GONE
@@ -106,7 +105,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                override fun onLiveDisconnected() {
+                override fun onRelayDisconnected() {
                     mainHandler.post {
                         setSwitchStateSilently(false)
                         liveBadge.visibility = View.GONE
@@ -119,29 +118,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             serviceBound = false
-            liveService = null
-        }
-    }
-
-    private val screenCaptureLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val data = result.data
-        if (result.resultCode == RESULT_OK && data != null) {
-            val rtmpUrl = LivePrefs.getRtmpUrl(this)
-            if (rtmpUrl.isBlank()) {
-                Toast.makeText(this, "Isi dulu alamat RTMP di ⚙ > Pengaturan Live.", Toast.LENGTH_LONG).show()
-                setSwitchStateSilently(false)
-                return@registerForActivityResult
-            }
-            val useInternal = LivePrefs.useInternalAudio(this)
-            val started = liveService?.startLive(result.resultCode, data, rtmpUrl, useInternal) ?: false
-            if (!started) {
-                Toast.makeText(this, "Gagal memulai live (cek RTMP URL / encoder HP).", Toast.LENGTH_LONG).show()
-                setSwitchStateSilently(false)
-            }
-        } else {
-            setSwitchStateSilently(false)
+            relayService = null
         }
     }
 
@@ -184,7 +161,7 @@ class MainActivity : AppCompatActivity() {
 
         applyBadgePosition()
         requestNotificationPermissionIfNeeded()
-        bindService(Intent(this, LiveStreamService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+        bindService(Intent(this, RelayStreamService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
 
         startStream()
     }
@@ -234,13 +211,18 @@ class MainActivity : AppCompatActivity() {
         }, RETRY_DELAY_MS)
     }
 
-    // ---------- live streaming (HP -> RTMP) ----------
+    // ---------- live streaming (relay TS dari PC -> RTMP) ----------
     private fun onLiveToggle(isChecked: Boolean) {
         if (isChecked) {
-            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            screenCaptureLauncher.launch(mpm.createScreenCaptureIntent())
+            val rtmpUrl = LivePrefs.getRtmpUrl(this)
+            if (rtmpUrl.isBlank()) {
+                Toast.makeText(this, "Isi dulu alamat RTMP di ⚙ > Pengaturan Live.", Toast.LENGTH_LONG).show()
+                setSwitchStateSilently(false)
+                return
+            }
+            relayService?.startRelay(rtmpUrl)
         } else {
-            liveService?.stopLive()
+            relayService?.stopRelay()
             liveBadge.visibility = View.GONE
             mainHandler.removeCallbacks(liveTimerRunnable)
         }
