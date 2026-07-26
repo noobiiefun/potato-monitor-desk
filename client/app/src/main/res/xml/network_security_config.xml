@@ -2,15 +2,12 @@
 <network-security-config>
     <!--
       Jangan izinkan cleartext secara global.
-      Hanya izinkan untuk localhost dan IP privat (PC di LAN yang sama).
+      Hanya izinkan untuk localhost/127.0.0.1.
+      Untuk adb reverse, localhost sudah cukup.
     -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">127.0.0.1</domain>
-        <!-- IP Privat umum di jaringan LAN -->
-        <domain includeSubdomains="true">192.168.0.0/16</domain>
-        <domain includeSubdomains="true">10.0.0.0/8</domain>
-        <domain includeSubdomains="true">172.16.0.0/12</domain>
     </domain-config>
 
     <base-config cleartextTrafficPermitted="false">

@@ -10,7 +10,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -256,9 +255,7 @@ class MainActivity : AppCompatActivity() {
     private fun showSettingsMenu() {
         val options = arrayOf(
             "Kualitas Streaming",
-            "Pengaturan Live (RTMP & Posisi Timer)",
-            "Aplikasi yang Disunyikan",
-            "Izin Akses Notifikasi"
+            "Pengaturan Live (RTMP & Posisi Timer)"
         )
         AlertDialog.Builder(this)
             .setTitle("Pengaturan")
@@ -266,8 +263,6 @@ class MainActivity : AppCompatActivity() {
                 when (which) {
                     0 -> showQualityDialog()
                     1 -> showLiveSettingsDialog()
-                    2 -> startActivity(Intent(this, AppListActivity::class.java))
-                    3 -> startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 }
             }
             .show()
