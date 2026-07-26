@@ -554,7 +554,26 @@ class App:
 
     # ---------- audio device picker ----------
     def open_audio_device_picker(self):
-        devices = StreamManager.list_audio_devices()
+        # Tampilkan dialog "mencari..." dulu, jalankan ffmpeg -list_devices
+        # di background thread supaya window utama TIDAK freeze/Not Responding
+        # (sebelumnya ini jalan langsung di main thread Tkinter).
+        loading = tk.Toplevel(self.root)
+        loading.title("Potato Monitor Desk")
+        loading.geometry("260x80")
+        loading.resizable(False, False)
+        tk.Label(loading, text="Mencari device audio...", font=("Segoe UI", 9)).pack(expand=True)
+        loading.transient(self.root)
+        loading.grab_set()
+
+        def worker():
+            devices = StreamManager.list_audio_devices()
+            self.root.after(0, lambda: self._show_device_picker_result(loading, devices))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_device_picker_result(self, loading_dialog, devices):
+        loading_dialog.destroy()
+
         if not devices:
             import tkinter.messagebox as mb
             mb.showwarning(
