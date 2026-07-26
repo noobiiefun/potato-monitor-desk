@@ -53,6 +53,27 @@ def resolve_tool(path_no_ext: str, exe_name: str) -> Optional[str]:
 FFMPEG_PATH = resolve_tool("ffmpeg", "ffmpeg.exe")
 ADB_PATH = resolve_tool("adb", "adb.exe")
 
+# Windows membuka jendela console baru tiap kali subprocess dijalankan,
+# kecuali kita eksplisit minta tidak. Ini yang menyebabkan cmd ffmpeg/adb
+# kelap-kelip mengganggu -- terutama parah kalau ffmpeg crash-loop
+# (gagal lalu di-retry tiap 2 detik, tiap retry buka jendela baru lagi).
+if os.name == "nt":
+    _NO_WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW
+    _NO_WINDOW_STARTUPINFO = subprocess.STARTUPINFO()
+    _NO_WINDOW_STARTUPINFO.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _NO_WINDOW_STARTUPINFO.wShowWindow = subprocess.SW_HIDE
+else:
+    _NO_WINDOW_FLAGS = 0
+    _NO_WINDOW_STARTUPINFO = None
+
+
+def _hidden_subprocess_kwargs() -> dict:
+    """kwargs tambahan supaya subprocess.run/Popen tidak membuka jendela
+    console. Pakai ini di SETIAP pemanggilan adb/ffmpeg."""
+    if os.name == "nt":
+        return {"creationflags": _NO_WINDOW_FLAGS, "startupinfo": _NO_WINDOW_STARTUPINFO}
+    return {}
+
 
 DEFAULT_CONFIG = {
     "audio_device": "Stereo Mix (Realtek Audio)",
@@ -210,6 +231,7 @@ class StreamManager:
         self._usb_connected = False
         self._device_name = ""
         self._reversed_serial = None
+        self._last_error = ""
         self._broadcast = TsBroadcastServer(cfg["port"])
         self._broadcast.start()
         self._poll_thread.start()
@@ -253,7 +275,8 @@ class StreamManager:
     # ---------- adb polling ----------
     def _get_connected_device(self):
         try:
-            result = subprocess.run([ADB_PATH, "devices"], capture_output=True, text=True, timeout=3)
+            result = subprocess.run([ADB_PATH, "devices"], capture_output=True, text=True,
+                                     timeout=3, **_hidden_subprocess_kwargs())
         except Exception:
             return None
         lines = [l for l in result.stdout.splitlines()[1:] if l.strip() and "device" in l]
@@ -265,7 +288,7 @@ class StreamManager:
         try:
             result = subprocess.run(
                 [ADB_PATH, "-s", serial, "shell", "getprop", "ro.product.model"],
-                capture_output=True, text=True, timeout=3
+                capture_output=True, text=True, timeout=3, **_hidden_subprocess_kwargs()
             )
             return result.stdout.strip() or serial
         except Exception:
@@ -277,9 +300,11 @@ class StreamManager:
             if serial:
                 if not self._usb_connected or serial != self._reversed_serial:
                     subprocess.run([ADB_PATH, "-s", serial, "reverse",
-                                     f"tcp:{self.cfg['port']}", f"tcp:{self.cfg['port']}"])
+                                     f"tcp:{self.cfg['port']}", f"tcp:{self.cfg['port']}"],
+                                    **_hidden_subprocess_kwargs())
                     subprocess.run([ADB_PATH, "-s", serial, "reverse",
-                                     f"tcp:{self.cfg['control_port']}", f"tcp:{self.cfg['control_port']}"])
+                                     f"tcp:{self.cfg['control_port']}", f"tcp:{self.cfg['control_port']}"],
+                                    **_hidden_subprocess_kwargs())
                     self._reversed_serial = serial
                 self._usb_connected = True
                 self._device_name = self._get_device_model(serial)
@@ -291,7 +316,7 @@ class StreamManager:
             time.sleep(2)
 
     def _notify(self):
-        self.on_status_change(self._proc is not None, self._usb_connected, self._device_name)
+        self.on_status_change(self._proc is not None, self._usb_connected, self._device_name, self._last_error)
 
     # ---------- ffmpeg control ----------
     def start(self):
@@ -312,21 +337,91 @@ class StreamManager:
         while self._want_running:
             cmd = build_ffmpeg_cmd(self.cfg)  # dibangun ulang tiap iterasi agar setting baru terpakai
             try:
-                self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
+                self._proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                    **_hidden_subprocess_kwargs()
+                )
                 self._notify()
+
+                # baca stderr ffmpeg di thread terpisah -- ini isinya pesan
+                # error asli (device audio tidak ketemu, resolusi invalid,
+                # dll) yang tadinya cuma numpang lewat di jendela cmd yang
+                # kelap-kelip lalu hilang begitu proses di-retry.
+                stderr_lines = []
+
+                def _drain_stderr(pipe):
+                    try:
+                        for raw in iter(pipe.readline, b""):
+                            line = raw.decode("utf-8", errors="ignore").strip()
+                            if line:
+                                stderr_lines.append(line)
+                                self._last_error = line
+                                self._log(line)
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_drain_stderr, args=(self._proc.stderr,), daemon=True).start()
+
                 stdout = self._proc.stdout
+                got_any_data = False
                 while True:
                     chunk = stdout.read(32 * 1024)
                     if not chunk:
                         break
+                    if not got_any_data:
+                        got_any_data = True
+                        self._last_error = ""  # ffmpeg berhasil kirim data, bersihkan error lama
+                        self._notify()
                     self._broadcast.broadcast(chunk)
                 self._proc.wait()
-            except Exception:
-                pass
+
+                if not got_any_data and self._want_running:
+                    # ffmpeg keluar tanpa pernah kirim data sama sekali -> pasti gagal start
+                    reason = stderr_lines[-1] if stderr_lines else "ffmpeg keluar tanpa output (cek config.json)"
+                    self._last_error = reason
+                    self._log(f"ffmpeg gagal start: {reason}")
+            except Exception as e:
+                self._last_error = str(e)
+                self._log(f"Exception saat menjalankan ffmpeg: {e}")
             self._proc = None
             self._notify()
             if self._want_running:
                 time.sleep(2)
+
+    def _log(self, message: str):
+        try:
+            log_path = os.path.join(os.path.dirname(CONFIG_PATH), "potato_server.log")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+        except Exception:
+            pass
+
+    @staticmethod
+    def list_audio_devices() -> list:
+        """Tanya ffmpeg daftar nama device audio (dshow) persis apa adanya --
+        nama ini yang harus disalin PERSIS ke config.json['audio_device']."""
+        try:
+            result = subprocess.run(
+                [FFMPEG_PATH, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+                capture_output=True, text=True, timeout=8, **_hidden_subprocess_kwargs()
+            )
+            output = result.stderr or ""
+        except Exception:
+            return []
+        devices = []
+        in_audio_section = False
+        for line in output.splitlines():
+            if "DirectShow audio devices" in line:
+                in_audio_section = True
+                continue
+            if "DirectShow video devices" in line:
+                in_audio_section = False
+                continue
+            if in_audio_section and '"' in line:
+                name = line.split('"')[1]
+                if name not in devices:
+                    devices.append(name)
+        return devices
 
 
 class App:
@@ -336,7 +431,7 @@ class App:
         self.tray_icon = None
 
         root.title("Potato Monitor Desk")
-        root.geometry("360x260")
+        root.geometry("360x335")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
@@ -360,6 +455,13 @@ class App:
         self.status_label = tk.Label(root, text="Status: Nonaktif", font=("Segoe UI", 10), fg="#666666")
         self.status_label.pack(pady=2)
 
+        self.error_label = tk.Label(root, text="", font=("Segoe UI", 8), fg="#c62828",
+                                      wraplength=320, justify="center")
+        self.error_label.pack(pady=(4, 0))
+
+        tk.Button(root, text="Cek / pilih device audio...", font=("Segoe UI", 8),
+                  command=self.open_audio_device_picker).pack(pady=(6, 0))
+
         tk.Label(root, text="Tutup jendela ini akan meminimize ke tray, bukan keluar.",
                   font=("Segoe UI", 8), fg="#999999").pack(side="bottom", pady=10)
 
@@ -380,7 +482,7 @@ class App:
         else:
             self.manager.stop()
 
-    def on_status_change(self, is_streaming, usb_connected, device_name):
+    def on_status_change(self, is_streaming, usb_connected, device_name, last_error=""):
         def update():
             self.switch.set_state(is_streaming)
             if usb_connected:
@@ -392,6 +494,7 @@ class App:
             self.status_label.config(
                 text=f"Status: {'Streaming aktif' if is_streaming else 'Nonaktif'}"
             )
+            self.error_label.config(text=f"⚠ {last_error}" if last_error else "")
             if self.tray_icon:
                 self.tray_icon.title = (
                     f"Potato Monitor Desk - {'ON' if is_streaming else 'OFF'} "
@@ -448,6 +551,50 @@ class App:
     def show_window(self):
         self.root.deiconify()
         self.root.lift()
+
+    # ---------- audio device picker ----------
+    def open_audio_device_picker(self):
+        devices = StreamManager.list_audio_devices()
+        if not devices:
+            import tkinter.messagebox as mb
+            mb.showwarning(
+                "Potato Monitor Desk",
+                "Tidak ada device audio (dshow) yang terdeteksi ffmpeg.\n\n"
+                "Kemungkinan Stereo Mix belum diaktifkan: klik kanan icon "
+                "speaker > Sound settings > More sound settings > tab "
+                "Recording > klik kanan area kosong > \"Show Disabled "
+                "Devices\" > enable Stereo Mix. Atau install VB-Audio "
+                "Virtual Cable sebagai alternatif."
+            )
+            return
+
+        picker = tk.Toplevel(self.root)
+        picker.title("Pilih device audio")
+        picker.geometry("380x220")
+        picker.resizable(False, False)
+        tk.Label(picker, text="Klik nama device yang mau dipakai untuk capture audio PC:",
+                  font=("Segoe UI", 9), wraplength=340, justify="left").pack(pady=(12, 6), padx=12)
+
+        listbox = tk.Listbox(picker, font=("Segoe UI", 9), height=6)
+        for name in devices:
+            listbox.insert("end", name)
+        listbox.pack(fill="both", expand=True, padx=12)
+
+        def apply_selection():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            chosen = devices[sel[0]]
+            self.cfg["audio_device"] = chosen
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.cfg, f, indent=2)
+            self.manager.cfg["audio_device"] = chosen
+            picker.destroy()
+            import tkinter.messagebox as mb
+            mb.showinfo("Potato Monitor Desk",
+                         f'Disimpan: "{chosen}"\n\nNyalakan lagi switch Streaming untuk mencoba.')
+
+        tk.Button(picker, text="Pakai device ini", command=apply_selection).pack(pady=10)
 
 
 def check_prereqs():
