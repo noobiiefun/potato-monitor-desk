@@ -35,7 +35,8 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             // Ditandatangani dengan keystore rilis kamu sendiri (bukan debug key).
             // APK yang ditandatangani debug key adalah salah satu pemicu utama

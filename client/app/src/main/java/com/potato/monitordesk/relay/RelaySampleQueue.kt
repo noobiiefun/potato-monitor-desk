@@ -1,9 +1,9 @@
 package com.potato.monitordesk.relay
 
 import androidx.media3.common.C
+import androidx.media3.common.DataReader
 import androidx.media3.common.Format
 import androidx.media3.common.util.ParsableByteArray
-import androidx.media3.datasource.DataReader
 import androidx.media3.extractor.ExtractorOutput
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.TrackOutput
@@ -39,7 +39,12 @@ class RelayTrackOutput(val trackType: Int) : TrackOutput {
         this.format = format
     }
 
-    override fun sampleData(input: DataReader, length: Int, allowEndOfInput: Boolean): Int {
+    override fun sampleData(
+        input: DataReader,
+        length: Int,
+        allowEndOfInput: Boolean,
+        sampleDataPart: Int
+    ): Int {
         val buf = ByteArray(length)
         var readTotal = 0
         while (readTotal < length) {
@@ -54,9 +59,9 @@ class RelayTrackOutput(val trackType: Int) : TrackOutput {
         return readTotal
     }
 
-    override fun sampleData(data: ParsableByteArray, length: Int) {
-        pending.write(data.data, data.position, length)
-        data.setPosition(data.position + length)
+    override fun sampleData(parsableData: ParsableByteArray, length: Int, sampleDataPart: Int) {
+        pending.write(parsableData.data, parsableData.position, length)
+        parsableData.setPosition(parsableData.position + length)
     }
 
     override fun sampleMetadata(
