@@ -1,17 +1,22 @@
 """
 Potato Monitor Desk - Server (GUI + Tray version)
 
-Jalan di background (system tray), dengan window sederhana berisi:
-  - Saklar ON/OFF untuk mulai/berhenti (nyalakan RTMP listener lokal)
+Arsitektur "spacedesk-style": PC HANYA capture layar (MJPEG, murah di CPU --
+tanpa motion estimation kayak H.264) + audio mentah, kirim ke HP lewat USB.
+HP yang decode lalu ENCODE ulang jadi H.264 pakai hardware encoder bawaan
+Android, baru kirim ke YouTube. PC tidak pernah encode H.264 sama sekali.
+
+Kenapa begini: PC ini (AMD A8-7600 generasi lama, GPU tanpa hardware H.264
+encoder yang kedeteksi OBS) terlalu berat kalau harus encode H.264 sendiri.
+MJPEG jauh lebih murah untuk CPU tua karena tiap frame dikompres sendiri-
+sendiri (seperti sekumpulan foto JPEG berurutan), tidak ada perhitungan
+gerak antar-frame yang mahal seperti H.264.
+
+Jalan di background (system tray), window sederhana berisi:
+  - Saklar ON/OFF untuk mulai/berhenti streaming
   - Status USB: Terhubung / Tidak terhubung
   - Nama device Android yang terkoneksi
-
-PC TIDAK capture layar/audio sendiri. OBS (yang kamu jalankan seperti
-biasa untuk gaming) yang push stream-nya ke sini lewat RTMP lokal
-(127.0.0.1) -- server cuma menerima lalu meneruskan (`-c copy`, remux
-tanpa re-encode) ke HP lewat kabel USB. Tidak butuh driver audio
-tambahan apa pun (Stereo Mix/VB-Cable/dll) karena OBS sudah handle
-capture audio+videonya sendiri.
+  - Pilihan device audio (klik "Cek / pilih device audio...")
 
 Menutup window (tombol X) TIDAK menutup aplikasi -> minimize ke tray.
 Untuk benar-benar keluar: klik kanan icon tray > Keluar.
@@ -20,6 +25,7 @@ Untuk benar-benar keluar: klik kanan icon tray > Keluar.
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -77,9 +83,11 @@ def _hidden_subprocess_kwargs() -> dict:
 
 
 DEFAULT_CONFIG = {
-    "rtmp_port": 1935,
-    "rtmp_app": "live",
-    "stream_key": "stream",
+    "audio_device": "CABLE Output (VB-Audio Virtual Cable)",
+    "resolution": "1280x720",
+    "framerate": 30,
+    "jpeg_quality": 6,  # 2 (terbaik/berat) - 31 (terjelek/ringan), ffmpeg -q:v
+    "audio_bitrate": "128k",
     "port": 9999,
     "control_port": 9998
 }
@@ -95,38 +103,96 @@ def load_config():
     return DEFAULT_CONFIG
 
 
-def build_ffmpeg_cmd(cfg):
-    """PC TIDAK capture layar/audio sendiri lagi. OBS (yang sudah kamu pakai
-    dan sudah terbukti jalan mulus) yang push hasil encode-nya ke sini lewat
-    RTMP lokal. ffmpeg di sini cuma REMUX (repackaging, `-c copy`, tanpa
-    decode/encode ulang sama sekali) supaya bisa diteruskan ke HP -- jauh
-    lebih ringan buat PC dan tidak butuh instalasi driver audio apa pun."""
-    rtmp_url = f"rtmp://0.0.0.0:{cfg['rtmp_port']}/{cfg['rtmp_app']}/{cfg['stream_key']}"
+def build_video_cmd(cfg):
+    """Capture layar jadi urutan JPEG (MJPEG) -- MURAH di CPU, tanpa motion
+    estimation seperti H.264. Ini yang bikin PC ringan."""
+    w, h = cfg["resolution"].split("x")
     return [
         FFMPEG_PATH, "-hide_banner", "-loglevel", "error",
-        "-listen", "1", "-i", rtmp_url,
-        "-c", "copy",
-        "-f", "mpegts", "pipe:1"
+        "-f", "gdigrab", "-framerate", str(cfg["framerate"]), "-i", "desktop",
+        "-vf", f"scale={w}:{h}",
+        "-q:v", str(cfg["jpeg_quality"]),
+        "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"
     ]
 
 
-class TsBroadcastServer:
-    """Terima 1 sumber MPEG-TS dari stdout ffmpeg, lalu salin (broadcast) byte
-    yang sama ke SEMUA klien TCP yang connect ke port ini secara bersamaan.
+def build_audio_cmd(cfg):
+    """Capture audio (device virtual seperti VB-Cable / Stereo Mix) jadi AAC
+    ADTS -- encode audio jauh lebih murah dari video, bukan bottleneck."""
+    return [
+        FFMPEG_PATH, "-hide_banner", "-loglevel", "error",
+        "-f", "dshow", "-i", f"audio={cfg['audio_device']}",
+        "-c:a", "aac", "-b:a", cfg["audio_bitrate"], "-ar", "44100",
+        "-f", "adts", "pipe:1"
+    ]
 
-    Ini menggantikan cara lama (ffmpeg langsung 'tcp://...?listen=1') yang
-    cuma bisa melayani 1 klien. Sekarang preview di HP (ExoPlayer) dan relay
-    livestream RTMP di HP bisa connect ke port yang sama di saat bersamaan.
-    """
+
+# ---------- framing protokol custom: [1 byte type][4 byte length BE][payload] ----------
+FRAME_TYPE_VIDEO = b"V"  # payload = 1 JPEG utuh
+FRAME_TYPE_AUDIO = b"A"  # payload = 1 frame ADTS AAC utuh (termasuk 7-byte header ADTS)
+
+
+def pack_frame(frame_type: bytes, payload: bytes) -> bytes:
+    return frame_type + struct.pack(">I", len(payload)) + payload
+
+
+def split_mjpeg_frames(read_fn, on_frame):
+    """Baca stream MJPEG mentah (JPEG demi JPEG, nempel tanpa jeda) dari
+    read_fn(nbytes)->bytes, panggil on_frame(jpeg_bytes) tiap 1 frame utuh
+    ketemu. Deteksi batas frame dengan cari SOI marker (0xFFD8) berikutnya
+    -- aman dipakai karena JPEG selalu byte-stuff 0xFF di data entropy-nya,
+    jadi 0xFFD8 mentah cuma muncul di awal frame beneran."""
+    buf = bytearray()
+    while True:
+        chunk = read_fn(64 * 1024)
+        if not chunk:
+            if len(buf) > 4:
+                on_frame(bytes(buf))
+            return
+        buf.extend(chunk)
+        while True:
+            # cari SOI kedua (SOI pertama ada di awal buffer, itu awal frame ini)
+            idx = buf.find(b"\xff\xd8", 2)
+            if idx == -1:
+                break
+            on_frame(bytes(buf[:idx]))
+            del buf[:idx]
+
+
+def split_adts_frames(read_fn, on_frame):
+    """Baca stream ADTS AAC mentah, panggil on_frame(adts_frame_bytes) tiap
+    1 frame utuh (header 7 byte + payload) ketemu, pakai panjang frame yang
+    tertulis di header ADTS-nya sendiri (bukan cari-cari marker)."""
+    buf = bytearray()
+    while True:
+        chunk = read_fn(16 * 1024)
+        if not chunk:
+            return
+        buf.extend(chunk)
+        while len(buf) >= 7:
+            if buf[0] != 0xFF or (buf[1] & 0xF0) != 0xF0:
+                # sync hilang, buang 1 byte, coba lagi (jarang terjadi)
+                del buf[0]
+                continue
+            frame_len = ((buf[3] & 0x03) << 11) | (buf[4] << 3) | (buf[5] >> 5)
+            if frame_len < 7 or len(buf) < frame_len:
+                break
+            on_frame(bytes(buf[:frame_len]))
+            del buf[:frame_len]
+
+
+class FramedBroadcastServer:
+    """Terima frame video (JPEG) & audio (ADTS) dari 2 proses ffmpeg
+    terpisah, bungkus jadi 1 paket kecil ber-header ([type][length][data]),
+    lalu broadcast ke SEMUA klien TCP yang connect ke port ini bersamaan."""
 
     def __init__(self, port: int):
         import socket as sk
         self.port = port
         self._sk = sk
-        self._clients = []  # list of socket.socket
+        self._clients = []
         self._clients_lock = threading.Lock()
         self._server_sock = None
-        self._accept_thread = None
 
     def start(self):
         srv = self._sk.socket(self._sk.AF_INET, self._sk.SOCK_STREAM)
@@ -134,8 +200,7 @@ class TsBroadcastServer:
         srv.bind(("0.0.0.0", self.port))
         srv.listen(8)
         self._server_sock = srv
-        self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
-        self._accept_thread.start()
+        threading.Thread(target=self._accept_loop, daemon=True).start()
 
     def _accept_loop(self):
         while self._server_sock is not None:
@@ -147,12 +212,12 @@ class TsBroadcastServer:
             except OSError:
                 break
 
-    def broadcast(self, chunk: bytes):
+    def broadcast(self, packet: bytes):
         with self._clients_lock:
             dead = []
             for c in self._clients:
                 try:
-                    c.sendall(chunk)
+                    c.sendall(packet)
                 except Exception:
                     dead.append(c)
             for c in dead:
@@ -219,32 +284,27 @@ class ToggleSwitch(tk.Canvas):
 
 
 class StreamManager:
-    """Mengatur proses ffmpeg + status koneksi adb, jalan di thread terpisah."""
+    """Mengatur 2 proses ffmpeg (video MJPEG + audio AAC) + status koneksi
+    adb, jalan di thread terpisah masing-masing."""
 
     def __init__(self, cfg, on_status_change):
         self.cfg = cfg
-        self.on_status_change = on_status_change  # callback(is_streaming, usb_connected, device_name)
-        self._proc = None
+        self.on_status_change = on_status_change
+        self._video_proc = None
+        self._audio_proc = None
         self._want_running = False
-        self._stream_thread = None
-        self._poll_thread = threading.Thread(target=self._poll_adb_loop, daemon=True)
         self._usb_connected = False
         self._device_name = ""
         self._reversed_serial = None
         self._last_error = ""
         self._status_text = "Nonaktif"
-        self._broadcast = TsBroadcastServer(cfg["port"])
+        self._broadcast = FramedBroadcastServer(cfg["port"])
         self._broadcast.start()
-        self._poll_thread.start()
-        self._control_thread = threading.Thread(target=self._control_server_loop, daemon=True)
-        self._control_thread.start()
+        threading.Thread(target=self._poll_adb_loop, daemon=True).start()
+        threading.Thread(target=self._control_server_loop, daemon=True).start()
 
-    # ---------- control channel ----------
-    # Catatan: sejak versi relay-OBS ini, kualitas video/audio ditentukan
-    # oleh setting OBS kamu sendiri (bukan lagi oleh server, karena server
-    # cuma remux `-c copy` tanpa re-encode). Channel ini dibiarkan tetap
-    # nyala (compat dengan client lama yang masih connect ke port ini)
-    # tapi tidak lagi mengubah apa pun di ffmpeg.
+    # ---------- control channel (dibiarkan nyala untuk kompatibilitas, tidak
+    # lagi mengubah setting apa pun -- kualitas sekarang diatur di config.json) ----------
     def _control_server_loop(self):
         import socket as sk
         srv = sk.socket(sk.AF_INET, sk.SOCK_STREAM)
@@ -272,7 +332,7 @@ class StreamManager:
         lines = [l for l in result.stdout.splitlines()[1:] if l.strip() and "device" in l]
         if not lines:
             return None
-        return lines[0].split()[0]  # serial
+        return lines[0].split()[0]
 
     def _get_device_model(self, serial):
         try:
@@ -306,87 +366,92 @@ class StreamManager:
             time.sleep(2)
 
     def _notify(self):
-        self.on_status_change(self._proc is not None, self._usb_connected, self._device_name,
+        is_streaming = self._video_proc is not None or self._audio_proc is not None
+        self.on_status_change(is_streaming, self._usb_connected, self._device_name,
                                self._last_error, self._status_text)
 
-    # ---------- ffmpeg control ----------
+    # ---------- start/stop ----------
     def start(self):
         if self._want_running:
             return
         self._want_running = True
-        self._stream_thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._stream_thread.start()
+        threading.Thread(target=self._run_video_loop, daemon=True).start()
+        threading.Thread(target=self._run_audio_loop, daemon=True).start()
+        self._status_text = "Streaming aktif"
+        self._notify()
 
     def stop(self):
         self._want_running = False
-        if self._proc is not None:
-            self._proc.terminate()
-            self._proc = None
+        for attr in ("_video_proc", "_audio_proc"):
+            p = getattr(self, attr)
+            if p is not None:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
         self._status_text = "Nonaktif"
         self._notify()
 
-    def _run_loop(self):
+    def _run_video_loop(self):
         while self._want_running:
-            cmd = build_ffmpeg_cmd(self.cfg)  # dibangun ulang tiap iterasi (config bisa berubah)
+            cmd = build_video_cmd(self.cfg)
             try:
-                self._proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
-                    **_hidden_subprocess_kwargs()
-                )
-                self._status_text = "Menunggu OBS mulai streaming..."
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         bufsize=0, **_hidden_subprocess_kwargs())
+                self._video_proc = proc
                 self._notify()
+                self._drain_stderr(proc.stderr, "video")
 
-                # baca stderr ffmpeg di thread terpisah -- isinya pesan error
-                # asli (RTMP app/key salah, port dipakai proses lain, dll)
-                # yang tadinya cuma numpang lewat di jendela cmd yang
-                # kelap-kelip lalu hilang begitu proses di-retry.
-                stderr_lines = []
+                def on_frame(jpeg_bytes):
+                    self._broadcast.broadcast(pack_frame(FRAME_TYPE_VIDEO, jpeg_bytes))
 
-                def _drain_stderr(pipe):
-                    try:
-                        for raw in iter(pipe.readline, b""):
-                            line = raw.decode("utf-8", errors="ignore").strip()
-                            if line:
-                                stderr_lines.append(line)
-                                self._last_error = line
-                                self._log(line)
-                    except Exception:
-                        pass
-
-                threading.Thread(target=_drain_stderr, args=(self._proc.stderr,), daemon=True).start()
-
-                stdout = self._proc.stdout
-                got_any_data = False
-                while True:
-                    chunk = stdout.read(32 * 1024)
-                    if not chunk:
-                        break
-                    if not got_any_data:
-                        got_any_data = True
-                        self._last_error = ""  # ffmpeg berhasil kirim data, bersihkan error lama
-                        self._status_text = "Streaming aktif (dari OBS)"
-                        self._notify()
-                    self._broadcast.broadcast(chunk)
-                self._proc.wait()
-
-                if got_any_data:
-                    # OBS berhenti streaming (mis. tombol Stop Streaming di OBS
-                    # ditekan) -- bukan error, cuma OBS-nya yang stop
-                    self._status_text = "OBS berhenti streaming, menunggu lagi..."
-                elif self._want_running:
-                    # ffmpeg keluar tanpa pernah terima koneksi/data -> gagal start
-                    reason = stderr_lines[-1] if stderr_lines else "ffmpeg keluar tanpa output"
-                    self._last_error = reason
-                    self._status_text = "Gagal (lihat pesan error di bawah)"
-                    self._log(f"ffmpeg gagal start: {reason}")
+                split_mjpeg_frames(proc.stdout.read, on_frame)
+                proc.wait()
             except Exception as e:
-                self._last_error = str(e)
-                self._status_text = "Gagal (lihat pesan error di bawah)"
-                self._log(f"Exception saat menjalankan ffmpeg: {e}")
-            self._proc = None
+                self._last_error = f"Video: {e}"
+                self._log(f"Exception video loop: {e}")
+            self._video_proc = None
             self._notify()
             if self._want_running:
                 time.sleep(2)
+
+    def _run_audio_loop(self):
+        while self._want_running:
+            cmd = build_audio_cmd(self.cfg)
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         bufsize=0, **_hidden_subprocess_kwargs())
+                self._audio_proc = proc
+                self._notify()
+                self._drain_stderr(proc.stderr, "audio")
+
+                def on_frame(adts_bytes):
+                    self._broadcast.broadcast(pack_frame(FRAME_TYPE_AUDIO, adts_bytes))
+
+                split_adts_frames(proc.stdout.read, on_frame)
+                proc.wait()
+            except Exception as e:
+                self._last_error = f"Audio: {e}"
+                self._log(f"Exception audio loop: {e}")
+            self._audio_proc = None
+            self._notify()
+            if self._want_running:
+                time.sleep(2)
+
+    def _drain_stderr(self, pipe, label):
+        def worker():
+            try:
+                for raw in iter(pipe.readline, b""):
+                    line = raw.decode("utf-8", errors="ignore").strip()
+                    if line:
+                        self._last_error = f"[{label}] {line}"
+                        self._status_text = "Gagal (lihat pesan error di bawah)"
+                        self._log(f"[{label}] {line}")
+                        self._notify()
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True).start()
 
     def _log(self, message: str):
         try:
@@ -396,6 +461,31 @@ class StreamManager:
         except Exception:
             pass
 
+    @staticmethod
+    def list_audio_devices() -> list:
+        try:
+            result = subprocess.run(
+                [FFMPEG_PATH, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+                capture_output=True, text=True, timeout=8, **_hidden_subprocess_kwargs()
+            )
+            output = result.stderr or ""
+        except Exception:
+            return []
+        devices = []
+        in_audio_section = False
+        for line in output.splitlines():
+            if "DirectShow audio devices" in line:
+                in_audio_section = True
+                continue
+            if "DirectShow video devices" in line:
+                in_audio_section = False
+                continue
+            if in_audio_section and '"' in line:
+                name = line.split('"')[1]
+                if name not in devices:
+                    devices.append(name)
+        return devices
+
 
 class App:
     def __init__(self, root):
@@ -404,7 +494,7 @@ class App:
         self.tray_icon = None
 
         root.title("Potato Monitor Desk")
-        root.geometry("360x335")
+        root.geometry("360x360")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
@@ -420,7 +510,7 @@ class App:
         self.switch.pack(side="left")
 
         self.usb_label = tk.Label(root, text="USB: Tidak terhubung", font=("Segoe UI", 10), fg="#c62828")
-        self.usb_label.pack(pady=(20, 2))
+        self.usb_label.pack(pady=(16, 2))
 
         self.device_label = tk.Label(root, text="Device: -", font=("Segoe UI", 10), fg="#666666")
         self.device_label.pack(pady=2)
@@ -432,14 +522,8 @@ class App:
                                       wraplength=320, justify="center")
         self.error_label.pack(pady=(4, 0))
 
-        obs_info = (
-            f"Setting OBS: Settings > Stream > Service: Custom\n"
-            f"Server: rtmp://127.0.0.1:{self.cfg['rtmp_port']}/{self.cfg['rtmp_app']}\n"
-            f"Stream Key: {self.cfg['stream_key']}\n"
-            f"Lalu tekan \"Start Streaming\" di OBS seperti biasa."
-        )
-        tk.Label(root, text=obs_info, font=("Segoe UI", 8), fg="#555555",
-                  justify="left").pack(pady=(10, 0))
+        tk.Button(root, text="Cek / pilih device audio...", font=("Segoe UI", 8),
+                  command=self.open_audio_device_picker).pack(pady=(8, 0))
 
         tk.Label(root, text="Tutup jendela ini akan meminimize ke tray, bukan keluar.",
                   font=("Segoe UI", 8), fg="#999999").pack(side="bottom", pady=10)
@@ -447,14 +531,12 @@ class App:
         self.manager = StreamManager(self.cfg, self.on_status_change)
         self._setup_tray()
 
-    # ---------- icon ----------
     def _set_window_icon(self):
         try:
             self.root.iconbitmap(resource_path("icon.ico"))
         except Exception:
-            pass  # aman diabaikan kalau file icon belum ada / platform non-Windows
+            pass
 
-    # ---------- UI callbacks ----------
     def on_toggle(self, is_on):
         if is_on:
             self.manager.start()
@@ -479,7 +561,6 @@ class App:
                 )
         self.root.after(0, update)
 
-    # ---------- tray ----------
     def _setup_tray(self):
         try:
             import pystray
@@ -492,7 +573,6 @@ class App:
             try:
                 return Image.open(resource_path("icon.png"))
             except Exception:
-                # fallback kalau icon.png tidak ditemukan, tetap jalan tanpa crash
                 from PIL import Image as _Image, ImageDraw as _ImageDraw
                 img = _Image.new("RGB", (64, 64), "#8d6e63")
                 d = _ImageDraw.Draw(img)
@@ -503,11 +583,11 @@ class App:
             self.root.after(0, self.show_window)
 
         def on_toggle_stream(_icon, _item):
-            new_state = not (self.manager._proc is not None)
+            new_state = not self.switch.is_on
             self.root.after(0, lambda: self.switch.set_state(new_state, fire_command=True))
 
         def toggle_text(_item):
-            return "Matikan Streaming" if self.manager._proc is not None else "Nyalakan Streaming"
+            return "Matikan Streaming" if self.switch.is_on else "Nyalakan Streaming"
 
         def on_exit(_icon, _item):
             self.manager.stop()
@@ -528,6 +608,64 @@ class App:
     def show_window(self):
         self.root.deiconify()
         self.root.lift()
+
+    # ---------- audio device picker ----------
+    def open_audio_device_picker(self):
+        loading = tk.Toplevel(self.root)
+        loading.title("Potato Monitor Desk")
+        loading.geometry("260x80")
+        loading.resizable(False, False)
+        tk.Label(loading, text="Mencari device audio...", font=("Segoe UI", 9)).pack(expand=True)
+        loading.transient(self.root)
+        loading.grab_set()
+
+        def worker():
+            devices = StreamManager.list_audio_devices()
+            self.root.after(0, lambda: self._show_device_picker_result(loading, devices))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_device_picker_result(self, loading_dialog, devices):
+        loading_dialog.destroy()
+
+        if not devices:
+            import tkinter.messagebox as mb
+            mb.showwarning(
+                "Potato Monitor Desk",
+                "Tidak ada device audio (dshow) yang terdeteksi ffmpeg.\n\n"
+                "Install VB-Audio Virtual Cable (gratis, vb-audio.com/Cable), "
+                "restart PC, lalu cek lagi. Atau enable Stereo Mix kalau ada "
+                "di Sound settings > Recording > Show Disabled Devices."
+            )
+            return
+
+        picker = tk.Toplevel(self.root)
+        picker.title("Pilih device audio")
+        picker.geometry("380x220")
+        picker.resizable(False, False)
+        tk.Label(picker, text="Klik nama device yang mau dipakai untuk capture audio PC:",
+                  font=("Segoe UI", 9), wraplength=340, justify="left").pack(pady=(12, 6), padx=12)
+
+        listbox = tk.Listbox(picker, font=("Segoe UI", 9), height=6)
+        for name in devices:
+            listbox.insert("end", name)
+        listbox.pack(fill="both", expand=True, padx=12)
+
+        def apply_selection():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            chosen = devices[sel[0]]
+            self.cfg["audio_device"] = chosen
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.cfg, f, indent=2)
+            self.manager.cfg["audio_device"] = chosen
+            picker.destroy()
+            import tkinter.messagebox as mb
+            mb.showinfo("Potato Monitor Desk",
+                         f'Disimpan: "{chosen}"\n\nNyalakan lagi switch Streaming untuk mencoba.')
+
+        tk.Button(picker, text="Pakai device ini", command=apply_selection).pack(pady=10)
 
 
 def check_prereqs():

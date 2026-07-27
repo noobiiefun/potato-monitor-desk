@@ -15,6 +15,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -24,13 +25,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.ui.PlayerView
+import com.potato.monitordesk.relay.MjpegPreviewEngine
 
 /**
  * Potato Monitor Desk - Client
@@ -55,7 +50,8 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private lateinit var player: ExoPlayer
+    private lateinit var previewImage: ImageView
+    private lateinit var previewEngine: MjpegPreviewEngine
     private lateinit var statusText: TextView
     private lateinit var reconnectButton: Button
     private lateinit var settingsButton: ImageButton
@@ -129,7 +125,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         applyImmersiveFullscreen()
 
-        val playerView = findViewById<PlayerView>(R.id.playerView)
+        val playerView = findViewById<ImageView>(R.id.previewImage)
+        previewImage = playerView
         statusText = findViewById(R.id.statusText)
         reconnectButton = findViewById(R.id.reconnectButton)
         settingsButton = findViewById(R.id.settingsButton)
@@ -137,19 +134,12 @@ class MainActivity : AppCompatActivity() {
         liveSwitch = findViewById(R.id.liveSwitch)
         liveBadge = findViewById(R.id.liveBadge)
 
-        player = ExoPlayer.Builder(this).build()
-        playerView.player = player
-
-        player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) statusText.text = ""
-            }
-
-            override fun onPlayerError(error: PlaybackException) {
+        previewEngine = MjpegPreviewEngine(HOST, STREAM_PORT, previewImage) { reason ->
+            mainHandler.post {
                 statusText.text = "Terputus dari PC. Mencoba ulang..."
                 scheduleReconnect()
             }
-        })
+        }
 
         reconnectButton.setOnClickListener { startStream() }
         settingsButton.setOnClickListener { showSettingsMenu() }
@@ -184,21 +174,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------- preview stream (dari PC) ----------
-    @androidx.media3.common.util.UnstableApi
     private fun startStream() {
         statusText.text = "Menghubungkan ke PC..."
-
-        val mediaItem = MediaItem.Builder()
-            .setUri("tcp://$HOST:$STREAM_PORT")
-            .setMimeType(MimeTypes.VIDEO_MP2T)
-            .build()
-
-        val mediaSource = ProgressiveMediaSource.Factory(TcpDataSourceFactory(HOST, STREAM_PORT))
-            .createMediaSource(mediaItem)
-
-        player.setMediaSource(mediaSource)
-        player.prepare()
-        player.playWhenReady = true
+        previewEngine.stop()
+        previewEngine = MjpegPreviewEngine(HOST, STREAM_PORT, previewImage) { reason ->
+            mainHandler.post {
+                statusText.text = "Terputus dari PC. Mencoba ulang..."
+                scheduleReconnect()
+            }
+        }
+        previewEngine.start()
+        statusText.text = ""
     }
 
     private fun scheduleReconnect() {
@@ -360,7 +346,7 @@ class MainActivity : AppCompatActivity() {
             unbindService(serviceConnection)
             serviceBound = false
         }
-        player.release()
+        previewEngine.stop()
         super.onDestroy()
     }
 }

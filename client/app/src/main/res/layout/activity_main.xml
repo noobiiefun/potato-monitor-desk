@@ -5,11 +5,12 @@
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <androidx.media3.ui.PlayerView
-        android:id="@+id/playerView"
+    <ImageView
+        android:id="@+id/previewImage"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:use_controller="false" />
+        android:scaleType="fitCenter"
+        android:contentDescription="Preview layar PC" />
 
     <TextView
         android:id="@+id/statusText"
