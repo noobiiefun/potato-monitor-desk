@@ -472,18 +472,17 @@ class StreamManager:
         except Exception:
             return []
         devices = []
-        in_audio_section = False
         for line in output.splitlines():
-            if "DirectShow audio devices" in line:
-                in_audio_section = True
+            # Format ffmpeg baru: "Nama Device" (audio)  atau  (video)
+            # (bukan lagi pakai header section "DirectShow audio devices").
+            # Skip baris "Alternative name" -- itu ID internal, bukan nama pilihan.
+            if "Alternative name" in line:
                 continue
-            if "DirectShow video devices" in line:
-                in_audio_section = False
+            if '"' not in line or "(audio)" not in line:
                 continue
-            if in_audio_section and '"' in line:
-                name = line.split('"')[1]
-                if name not in devices:
-                    devices.append(name)
+            name = line.split('"')[1]
+            if name not in devices:
+                devices.append(name)
         return devices
 
 
