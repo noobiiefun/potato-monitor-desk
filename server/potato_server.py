@@ -89,7 +89,13 @@ DEFAULT_CONFIG = {
     "jpeg_quality": 6,  # 2 (terbaik/berat) - 31 (terjelek/ringan), ffmpeg -q:v
     "audio_bitrate": "128k",
     "port": 9999,
-    "control_port": 9998
+    "control_port": 9998,
+    # "desktop" = capture seluruh layar. "window" = capture 1 window spesifik
+    # by judul (mis. window "Windowed Projector (Preview)" dari OBS -- klik
+    # kanan di jendela Preview OBS > Windowed Projector (Preview) untuk
+    # membukanya, TIDAK perlu Start Streaming/Recording di OBS sama sekali).
+    "capture_mode": "desktop",
+    "capture_window_title": "Windowed Projector (Preview)"
 }
 
 
@@ -104,12 +110,17 @@ def load_config():
 
 
 def build_video_cmd(cfg):
-    """Capture layar jadi urutan JPEG (MJPEG) -- MURAH di CPU, tanpa motion
-    estimation seperti H.264. Ini yang bikin PC ringan."""
+    """Capture layar (atau 1 window spesifik) jadi urutan JPEG (MJPEG) --
+    MURAH di CPU, tanpa motion estimation seperti H.264. Ini yang bikin
+    PC ringan."""
     w, h = cfg["resolution"].split("x")
+    if cfg.get("capture_mode") == "window" and cfg.get("capture_window_title"):
+        input_args = ["-i", f"title={cfg['capture_window_title']}"]
+    else:
+        input_args = ["-i", "desktop"]
     return [
         FFMPEG_PATH, "-hide_banner", "-loglevel", "error",
-        "-f", "gdigrab", "-framerate", str(cfg["framerate"]), "-i", "desktop",
+        "-f", "gdigrab", "-framerate", str(cfg["framerate"]), *input_args,
         "-vf", f"scale={w}:{h}",
         "-q:v", str(cfg["jpeg_quality"]),
         "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"
@@ -493,7 +504,7 @@ class App:
         self.tray_icon = None
 
         root.title("Potato Monitor Desk")
-        root.geometry("360x360")
+        root.geometry("360x440")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
@@ -524,11 +535,40 @@ class App:
         tk.Button(root, text="Cek / pilih device audio...", font=("Segoe UI", 8),
                   command=self.open_audio_device_picker).pack(pady=(8, 0))
 
+        capture_frame = tk.Frame(root)
+        capture_frame.pack(pady=(10, 0), fill="x", padx=16)
+        self.capture_window_var = tk.BooleanVar(value=(self.cfg.get("capture_mode") == "window"))
+        tk.Checkbutton(
+            capture_frame, text="Capture window OBS Preview saja (bukan seluruh layar)",
+            font=("Segoe UI", 8), variable=self.capture_window_var,
+            command=self.on_capture_mode_changed
+        ).pack(anchor="w")
+
+        self.window_title_var = tk.StringVar(value=self.cfg.get("capture_window_title", ""))
+        self.window_title_entry = tk.Entry(capture_frame, textvariable=self.window_title_var, font=("Segoe UI", 8))
+        self.window_title_entry.pack(fill="x", pady=(2, 0))
+        self.window_title_entry.bind("<FocusOut>", lambda _e: self.on_capture_mode_changed())
+        self.window_title_entry.bind("<Return>", lambda _e: self.on_capture_mode_changed())
+
+        tk.Label(
+            capture_frame,
+            text='Judul window persis (klik kanan Preview OBS > Windowed Projector (Preview))',
+            font=("Segoe UI", 7), fg="#999999", wraplength=320, justify="left"
+        ).pack(anchor="w")
+
         tk.Label(root, text="Tutup jendela ini akan meminimize ke tray, bukan keluar.",
                   font=("Segoe UI", 8), fg="#999999").pack(side="bottom", pady=10)
 
         self.manager = StreamManager(self.cfg, self.on_status_change)
         self._setup_tray()
+
+    def on_capture_mode_changed(self):
+        self.cfg["capture_mode"] = "window" if self.capture_window_var.get() else "desktop"
+        self.cfg["capture_window_title"] = self.window_title_var.get().strip()
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.cfg, f, indent=2)
+        self.manager.cfg["capture_mode"] = self.cfg["capture_mode"]
+        self.manager.cfg["capture_window_title"] = self.cfg["capture_window_title"]
 
     def _set_window_icon(self):
         try:
