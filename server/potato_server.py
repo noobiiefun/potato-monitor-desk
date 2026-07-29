@@ -95,7 +95,8 @@ DEFAULT_CONFIG = {
     # kanan di jendela Preview OBS > Windowed Projector (Preview) untuk
     # membukanya, TIDAK perlu Start Streaming/Recording di OBS sama sekali).
     "capture_mode": "desktop",
-    "capture_window_title": "Windowed Projector (Preview)"
+    "capture_window_title": "Windowed Projector (Preview)",
+    "rtmp_url": ""
 }
 
 
@@ -314,21 +315,24 @@ class StreamManager:
         threading.Thread(target=self._poll_adb_loop, daemon=True).start()
         threading.Thread(target=self._control_server_loop, daemon=True).start()
 
-    # ---------- control channel (dibiarkan nyala untuk kompatibilitas, tidak
-    # lagi mengubah setting apa pun -- kualitas sekarang diatur di config.json) ----------
+    # ---------- control channel ----------
+    # Setiap kali HP connect ke port ini, server langsung kirim balik JSON
+    # berisi rtmp_url yang kamu isi di window app -- jadi kamu cukup isi
+    # sekali di sini, HP otomatis dapet tanpa perlu ketik manual di HP.
     def _control_server_loop(self):
         import socket as sk
         srv = sk.socket(sk.AF_INET, sk.SOCK_STREAM)
         srv.setsockopt(sk.SOL_SOCKET, sk.SO_REUSEADDR, 1)
         try:
             srv.bind(("0.0.0.0", self.cfg["control_port"]))
-            srv.listen(2)
+            srv.listen(4)
         except Exception:
             return
         while True:
             try:
                 conn, _ = srv.accept()
-                conn.recv(4096)
+                payload = json.dumps({"rtmp_url": self.cfg.get("rtmp_url", "")}) + "\n"
+                conn.sendall(payload.encode("utf-8"))
                 conn.close()
             except Exception:
                 pass
@@ -504,7 +508,7 @@ class App:
         self.tray_icon = None
 
         root.title("Potato Monitor Desk")
-        root.geometry("360x440")
+        root.geometry("360x520")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
@@ -556,6 +560,18 @@ class App:
             font=("Segoe UI", 7), fg="#999999", wraplength=320, justify="left"
         ).pack(anchor="w")
 
+        rtmp_frame = tk.Frame(root)
+        rtmp_frame.pack(pady=(10, 0), fill="x", padx=16)
+        tk.Label(rtmp_frame, text="RTMP URL + Stream Key (dikirim otomatis ke HP):",
+                  font=("Segoe UI", 8)).pack(anchor="w")
+        self.rtmp_url_var = tk.StringVar(value=self.cfg.get("rtmp_url", ""))
+        rtmp_entry = tk.Entry(rtmp_frame, textvariable=self.rtmp_url_var, font=("Segoe UI", 8), show="*")
+        rtmp_entry.pack(fill="x", pady=(2, 0))
+        rtmp_entry.bind("<FocusOut>", lambda _e: self.on_rtmp_url_changed())
+        rtmp_entry.bind("<Return>", lambda _e: self.on_rtmp_url_changed())
+        tk.Label(rtmp_frame, text='Contoh: rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx',
+                  font=("Segoe UI", 7), fg="#999999", wraplength=320, justify="left").pack(anchor="w")
+
         tk.Label(root, text="Tutup jendela ini akan meminimize ke tray, bukan keluar.",
                   font=("Segoe UI", 8), fg="#999999").pack(side="bottom", pady=10)
 
@@ -569,6 +585,12 @@ class App:
             json.dump(self.cfg, f, indent=2)
         self.manager.cfg["capture_mode"] = self.cfg["capture_mode"]
         self.manager.cfg["capture_window_title"] = self.cfg["capture_window_title"]
+
+    def on_rtmp_url_changed(self):
+        self.cfg["rtmp_url"] = self.rtmp_url_var.get().strip()
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.cfg, f, indent=2)
+        self.manager.cfg["rtmp_url"] = self.cfg["rtmp_url"]
 
     def _set_window_icon(self):
         try:

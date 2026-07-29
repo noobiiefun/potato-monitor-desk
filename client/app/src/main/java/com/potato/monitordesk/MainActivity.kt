@@ -184,6 +184,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         previewEngine.start()
+
+        // Ambil RTMP URL+key yang diisi di server -- otomatis tersimpan,
+        // supaya kamu cukup toggle switch LIVE tanpa perlu ketik manual.
+        ControlClient.fetchRtmpUrl { url ->
+            if (!url.isNullOrBlank()) {
+                mainHandler.post { LivePrefs.setRtmpUrl(this, url) }
+            }
+        }
         statusText.text = ""
     }
 
