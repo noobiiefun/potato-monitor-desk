@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import collections
 import tkinter as tk
 from typing import Optional
 
@@ -196,14 +197,23 @@ def split_adts_frames(read_fn, on_frame):
 class FramedBroadcastServer:
     """Terima frame video (JPEG) & audio (ADTS) dari 2 proses ffmpeg
     terpisah, bungkus jadi 1 paket kecil ber-header ([type][length][data]),
-    lalu broadcast ke SEMUA klien TCP yang connect ke port ini bersamaan."""
+    lalu broadcast ke SEMUA klien TCP yang connect ke port ini bersamaan.
+
+    PENTING: tiap klien punya antrian + thread pengirim SENDIRI. Kalau ada
+    1 klien yang lambat nerima (mis. HP lagi berat/USB lelet), klien itu
+    yang kehilangan frame lama (di-drop, bukan ditunggu) -- klien LAIN dan
+    proses capture ffmpeg TIDAK ikut ketahan. Sebelumnya broadcast() kirim
+    langsung (blocking) ke semua klien gantian, jadi 1 klien lambat bikin
+    semuanya numpuk delay, termasuk balik ke buffer capture audio di PC."""
+
+    MAX_QUEUE = 60  # ~2 detik buffer di 30fps sebelum mulai buang frame lama
 
     def __init__(self, port: int):
         import socket as sk
         self.port = port
         self._sk = sk
-        self._clients = []
         self._clients_lock = threading.Lock()
+        self._client_queues = {}  # conn -> collections.deque
         self._server_sock = None
 
     def start(self):
@@ -219,34 +229,53 @@ class FramedBroadcastServer:
             try:
                 conn, _ = self._server_sock.accept()
                 conn.setsockopt(self._sk.IPPROTO_TCP, self._sk.TCP_NODELAY, 1)
+                q = collections.deque(maxlen=self.MAX_QUEUE)
+                event = threading.Event()
                 with self._clients_lock:
-                    self._clients.append(conn)
+                    self._client_queues[conn] = (q, event)
+                threading.Thread(target=self._writer_loop, args=(conn, q, event), daemon=True).start()
             except OSError:
                 break
 
+    def _writer_loop(self, conn, q: "collections.deque", event: threading.Event):
+        while True:
+            event.wait(timeout=1.0)
+            event.clear()
+            while True:
+                try:
+                    packet = q.popleft()
+                except IndexError:
+                    break
+                try:
+                    conn.sendall(packet)
+                except Exception:
+                    with self._clients_lock:
+                        self._client_queues.pop(conn, None)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    return
+
     def broadcast(self, packet: bytes):
+        # Non-blocking: cuma numpuk ke antrian tiap klien lalu bangunkan
+        # writer thread-nya. deque(maxlen=...) otomatis buang frame PALING
+        # LAMA sendiri kalau klien itu ketinggalan jauh -- tidak pernah
+        # nunggu di sini.
         with self._clients_lock:
-            dead = []
-            for c in self._clients:
-                try:
-                    c.sendall(packet)
-                except Exception:
-                    dead.append(c)
-            for c in dead:
-                self._clients.remove(c)
-                try:
-                    c.close()
-                except Exception:
-                    pass
+            items = list(self._client_queues.values())
+        for q, event in items:
+            q.append(packet)
+            event.set()
 
     def stop(self):
         with self._clients_lock:
-            for c in self._clients:
+            for conn in list(self._client_queues.keys()):
                 try:
-                    c.close()
+                    conn.close()
                 except Exception:
                     pass
-            self._clients.clear()
+            self._client_queues.clear()
         if self._server_sock is not None:
             try:
                 self._server_sock.close()
