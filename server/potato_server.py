@@ -24,6 +24,7 @@ Untuk benar-benar keluar: klik kanan icon tray > Keluar.
 
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -31,7 +32,10 @@ import sys
 import threading
 import time
 import collections
+import urllib.request
+import urllib.error
 import tkinter as tk
+from tkinter import ttk
 from typing import Optional
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
@@ -97,7 +101,9 @@ DEFAULT_CONFIG = {
     # membukanya, TIDAK perlu Start Streaming/Recording di OBS sama sekali).
     "capture_mode": "desktop",
     "capture_window_title": "Windowed Projector (Preview)",
-    "rtmp_url": ""
+    "rtmp_url": "",
+    "youtube_api_key": "",
+    "youtube_video_id": ""
 }
 
 
@@ -530,83 +536,327 @@ class StreamManager:
         return devices
 
 
+def list_open_window_titles() -> list:
+    """Daftar judul semua window yang sedang terbuka & terlihat di Windows --
+    dipakai buat dropdown pilih window capture, jadi tidak perlu ketik judul
+    manual. Pakai ctypes langsung (user32.dll), tidak butuh library tambahan."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    titles = []
+
+    def foreach_window(hwnd, _lparam):
+        if ctypes.windll.user32.IsWindowVisible(hwnd):
+            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                title = buff.value.strip()
+                if title and title not in titles:
+                    titles.append(title)
+        return True
+
+    enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(foreach_window)
+    ctypes.windll.user32.EnumWindows(enum_proc, 0)
+    return titles
+
+
+def extract_youtube_video_id(text: str) -> str:
+    """Terima URL YouTube penuh atau video ID mentah, kembalikan video ID-nya
+    saja. Contoh URL yang didukung: watch?v=, youtu.be/, /live/."""
+    text = text.strip()
+    patterns = [
+        r"(?:v=|youtu\.be/|/live/|/embed/)([A-Za-z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            return m.group(1)
+    return text  # anggap sudah berupa ID mentah
+
+
+class YoutubeChatPoller:
+    """Polling YouTube Live Chat lewat YouTube Data API v3 -- jauh lebih
+    ringan dari embed WebView (cuma HTTP+JSON, bukan render Chromium penuh)."""
+
+    def __init__(self, api_key: str, video_id: str, on_messages, on_error):
+        self.api_key = api_key
+        self.video_id = extract_youtube_video_id(video_id)
+        self.on_messages = on_messages  # callback(list[(author, text)])
+        self.on_error = on_error  # callback(str)
+        self._running = False
+        self._thread = None
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+
+    def _api_get(self, url: str) -> dict:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _run(self):
+        try:
+            info_url = (
+                "https://www.googleapis.com/youtube/v3/videos"
+                f"?part=liveStreamingDetails&id={self.video_id}&key={self.api_key}"
+            )
+            data = self._api_get(info_url)
+            items = data.get("items", [])
+            if not items:
+                self.on_error("Video ID tidak ditemukan (cek lagi URL/ID-nya).")
+                return
+            live_chat_id = items[0].get("liveStreamingDetails", {}).get("activeLiveChatId")
+            if not live_chat_id:
+                self.on_error("Live chat belum aktif -- pastikan stream sudah LIVE di YouTube.")
+                return
+        except urllib.error.HTTPError as e:
+            self.on_error(f"API error ({e.code}): cek API key & kuota harian.")
+            return
+        except Exception as e:
+            self.on_error(f"Gagal menghubungi YouTube API: {e}")
+            return
+
+        page_token = ""
+        while self._running:
+            try:
+                url = (
+                    "https://www.googleapis.com/youtube/v3/liveChat/messages"
+                    f"?liveChatId={live_chat_id}&part=snippet,authorDetails&key={self.api_key}"
+                )
+                if page_token:
+                    url += f"&pageToken={page_token}"
+                data = self._api_get(url)
+                messages = []
+                for item in data.get("items", []):
+                    author = item.get("authorDetails", {}).get("displayName", "?")
+                    text = item.get("snippet", {}).get("displayMessage", "")
+                    if text:
+                        messages.append((author, text))
+                if messages:
+                    self.on_messages(messages)
+                page_token = data.get("nextPageToken", page_token)
+                interval_ms = data.get("pollingIntervalMillis", 5000)
+                time.sleep(max(interval_ms, 2000) / 1000)
+            except urllib.error.HTTPError as e:
+                self.on_error(f"API error ({e.code}): cek API key & kuota harian.")
+                time.sleep(10)
+            except Exception as e:
+                self.on_error(f"Terputus dari YouTube API: {e}")
+                time.sleep(5)
+
+
 class App:
     def __init__(self, root):
         self.root = root
         self.cfg = load_config()
         self.tray_icon = None
+        self.chat_poller: Optional[YoutubeChatPoller] = None
 
         root.title("Potato Monitor Desk")
-        root.geometry("360x520")
+        root.geometry("400x480")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._set_window_icon()
+        self._apply_theme()
 
-        tk.Label(root, text="Potato Monitor Desk", font=("Segoe UI", 14, "bold")).pack(pady=(16, 4))
-        tk.Label(root, text="Preview layar + suara PC ke HP lewat USB",
-                  font=("Segoe UI", 9), fg="#666666").pack(pady=(0, 16))
+        header = ttk.Frame(root, padding=(16, 16, 16, 8))
+        header.pack(fill="x")
+        ttk.Label(header, text="Potato Monitor Desk", font=("Segoe UI", 15, "bold")).pack()
+        ttk.Label(header, text="Preview layar + suara PC ke HP lewat USB",
+                  font=("Segoe UI", 9), foreground="#666666").pack(pady=(2, 0))
 
-        switch_frame = tk.Frame(root)
-        switch_frame.pack(pady=4)
-        tk.Label(switch_frame, text="Streaming:", font=("Segoe UI", 11)).pack(side="left", padx=(0, 12))
-        self.switch = ToggleSwitch(switch_frame, command=self.on_toggle)
-        self.switch.pack(side="left")
+        notebook = ttk.Notebook(root)
+        notebook.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-        self.usb_label = tk.Label(root, text="USB: Tidak terhubung", font=("Segoe UI", 10), fg="#c62828")
-        self.usb_label.pack(pady=(16, 2))
+        status_tab = ttk.Frame(notebook, padding=16)
+        settings_tab = ttk.Frame(notebook, padding=16)
+        chat_tab = ttk.Frame(notebook, padding=16)
+        notebook.add(status_tab, text="Status")
+        notebook.add(settings_tab, text="Pengaturan")
+        notebook.add(chat_tab, text="Live Chat")
 
-        self.device_label = tk.Label(root, text="Device: -", font=("Segoe UI", 10), fg="#666666")
-        self.device_label.pack(pady=2)
+        self._build_status_tab(status_tab)
+        self._build_settings_tab(settings_tab)
+        self._build_chat_tab(chat_tab)
 
-        self.status_label = tk.Label(root, text="Status: Nonaktif", font=("Segoe UI", 10), fg="#666666")
-        self.status_label.pack(pady=2)
-
-        self.error_label = tk.Label(root, text="", font=("Segoe UI", 8), fg="#c62828",
-                                      wraplength=320, justify="center")
-        self.error_label.pack(pady=(4, 0))
-
-        tk.Button(root, text="Cek / pilih device audio...", font=("Segoe UI", 8),
-                  command=self.open_audio_device_picker).pack(pady=(8, 0))
-
-        capture_frame = tk.Frame(root)
-        capture_frame.pack(pady=(10, 0), fill="x", padx=16)
-        self.capture_window_var = tk.BooleanVar(value=(self.cfg.get("capture_mode") == "window"))
-        tk.Checkbutton(
-            capture_frame, text="Capture window OBS Preview saja (bukan seluruh layar)",
-            font=("Segoe UI", 8), variable=self.capture_window_var,
-            command=self.on_capture_mode_changed
-        ).pack(anchor="w")
-
-        self.window_title_var = tk.StringVar(value=self.cfg.get("capture_window_title", ""))
-        self.window_title_entry = tk.Entry(capture_frame, textvariable=self.window_title_var, font=("Segoe UI", 8))
-        self.window_title_entry.pack(fill="x", pady=(2, 0))
-        self.window_title_entry.bind("<FocusOut>", lambda _e: self.on_capture_mode_changed())
-        self.window_title_entry.bind("<Return>", lambda _e: self.on_capture_mode_changed())
-
-        tk.Label(
-            capture_frame,
-            text='Judul window persis (klik kanan Preview OBS > Windowed Projector (Preview))',
-            font=("Segoe UI", 7), fg="#999999", wraplength=320, justify="left"
-        ).pack(anchor="w")
-
-        rtmp_frame = tk.Frame(root)
-        rtmp_frame.pack(pady=(10, 0), fill="x", padx=16)
-        tk.Label(rtmp_frame, text="RTMP URL + Stream Key (dikirim otomatis ke HP):",
-                  font=("Segoe UI", 8)).pack(anchor="w")
-        self.rtmp_url_var = tk.StringVar(value=self.cfg.get("rtmp_url", ""))
-        rtmp_entry = tk.Entry(rtmp_frame, textvariable=self.rtmp_url_var, font=("Segoe UI", 8), show="*")
-        rtmp_entry.pack(fill="x", pady=(2, 0))
-        rtmp_entry.bind("<FocusOut>", lambda _e: self.on_rtmp_url_changed())
-        rtmp_entry.bind("<Return>", lambda _e: self.on_rtmp_url_changed())
-        tk.Label(rtmp_frame, text='Contoh: rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx',
-                  font=("Segoe UI", 7), fg="#999999", wraplength=320, justify="left").pack(anchor="w")
-
-        tk.Label(root, text="Tutup jendela ini akan meminimize ke tray, bukan keluar.",
-                  font=("Segoe UI", 8), fg="#999999").pack(side="bottom", pady=10)
+        ttk.Label(root, text="Tutup jendela ini akan meminimize ke tray, bukan keluar.",
+                  font=("Segoe UI", 8), foreground="#999999").pack(pady=(0, 10))
 
         self.manager = StreamManager(self.cfg, self.on_status_change)
         self._setup_tray()
 
+    def _apply_theme(self):
+        style = ttk.Style(self.root)
+        try:
+            if os.name == "nt":
+                style.theme_use("vista")
+            else:
+                style.theme_use("clam")
+        except Exception:
+            pass
+        style.configure("TNotebook.Tab", font=("Segoe UI", 9), padding=(14, 6))
+        style.configure("TLabel", font=("Segoe UI", 9))
+        style.configure("TButton", font=("Segoe UI", 9))
+        style.configure("Accent.TButton", font=("Segoe UI", 9, "bold"))
+
+    # ---------- Tab: Status ----------
+    def _build_status_tab(self, parent):
+        switch_frame = ttk.Frame(parent)
+        switch_frame.pack(pady=(4, 12))
+        ttk.Label(switch_frame, text="Streaming:", font=("Segoe UI", 11)).pack(side="left", padx=(0, 12))
+        self.switch = ToggleSwitch(switch_frame, command=self.on_toggle)
+        self.switch.pack(side="left")
+
+        info = ttk.Frame(parent)
+        info.pack(fill="x", pady=4)
+        self.usb_label = ttk.Label(info, text="USB: Tidak terhubung", font=("Segoe UI", 10), foreground="#c62828")
+        self.usb_label.pack(anchor="center")
+        self.device_label = ttk.Label(info, text="Device: -", font=("Segoe UI", 10), foreground="#666666")
+        self.device_label.pack(anchor="center", pady=2)
+        self.status_label = ttk.Label(info, text="Status: Nonaktif", font=("Segoe UI", 10), foreground="#666666")
+        self.status_label.pack(anchor="center", pady=2)
+
+        self.error_label = ttk.Label(parent, text="", font=("Segoe UI", 8), foreground="#c62828",
+                                      wraplength=340, justify="center")
+        self.error_label.pack(pady=(8, 0), fill="x")
+
+    # ---------- Tab: Pengaturan ----------
+    def _build_settings_tab(self, parent):
+        audio_section = ttk.LabelFrame(parent, text="Audio", padding=10)
+        audio_section.pack(fill="x", pady=(0, 10))
+        ttk.Button(audio_section, text="Cek / pilih device audio...",
+                   command=self.open_audio_device_picker).pack(fill="x")
+
+        capture_section = ttk.LabelFrame(parent, text="Sumber Capture", padding=10)
+        capture_section.pack(fill="x", pady=(0, 10))
+        self.capture_window_var = tk.BooleanVar(value=(self.cfg.get("capture_mode") == "window"))
+        ttk.Checkbutton(
+            capture_section, text="Capture 1 window saja (bukan seluruh layar)",
+            variable=self.capture_window_var, command=self.on_capture_mode_changed
+        ).pack(anchor="w")
+
+        self.window_title_var = tk.StringVar(value=self.cfg.get("capture_window_title", ""))
+        self.window_combo = ttk.Combobox(capture_section, textvariable=self.window_title_var, font=("Segoe UI", 9))
+        self.window_combo.pack(fill="x", pady=(6, 0))
+        self.window_combo["postcommand"] = self._refresh_window_list
+        self.window_combo.bind("<<ComboboxSelected>>", lambda _e: self.on_capture_mode_changed())
+        self.window_combo.bind("<FocusOut>", lambda _e: self.on_capture_mode_changed())
+        self.window_combo.bind("<Return>", lambda _e: self.on_capture_mode_changed())
+
+        ttk.Label(
+            capture_section,
+            text='Daftar otomatis dari window yang sedang terbuka. Buka dulu '
+                 '"Windowed Projector (Preview)" di OBS (klik kanan Preview), '
+                 'lalu klik dropdown ini buat refresh.',
+            font=("Segoe UI", 7), foreground="#999999", wraplength=340, justify="left"
+        ).pack(anchor="w", pady=(4, 0))
+
+        rtmp_section = ttk.LabelFrame(parent, text="Live Streaming", padding=10)
+        rtmp_section.pack(fill="x")
+        ttk.Label(rtmp_section, text="RTMP URL + Stream Key (dikirim otomatis ke HP):").pack(anchor="w")
+        self.rtmp_url_var = tk.StringVar(value=self.cfg.get("rtmp_url", ""))
+        rtmp_entry = ttk.Entry(rtmp_section, textvariable=self.rtmp_url_var, show="*")
+        rtmp_entry.pack(fill="x", pady=(4, 0))
+        rtmp_entry.bind("<FocusOut>", lambda _e: self.on_rtmp_url_changed())
+        rtmp_entry.bind("<Return>", lambda _e: self.on_rtmp_url_changed())
+        ttk.Label(rtmp_section, text='Contoh: rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx',
+                  font=("Segoe UI", 7), foreground="#999999", wraplength=340, justify="left").pack(anchor="w", pady=(4, 0))
+
+    def _refresh_window_list(self):
+        titles = list_open_window_titles()
+        self.window_combo["values"] = titles
+
+    # ---------- Tab: Live Chat ----------
+    def _build_chat_tab(self, parent):
+        key_section = ttk.Frame(parent)
+        key_section.pack(fill="x")
+        ttk.Label(key_section, text="YouTube API Key:").pack(anchor="w")
+        self.yt_api_key_var = tk.StringVar(value=self.cfg.get("youtube_api_key", ""))
+        yt_key_entry = ttk.Entry(key_section, textvariable=self.yt_api_key_var, show="*")
+        yt_key_entry.pack(fill="x", pady=(2, 8))
+
+        ttk.Label(key_section, text="URL / Video ID Live YouTube:").pack(anchor="w")
+        self.yt_video_var = tk.StringVar(value=self.cfg.get("youtube_video_id", ""))
+        yt_video_entry = ttk.Entry(key_section, textvariable=self.yt_video_var)
+        yt_video_entry.pack(fill="x", pady=(2, 8))
+
+        btn_row = ttk.Frame(key_section)
+        btn_row.pack(fill="x", pady=(0, 8))
+        self.chat_toggle_btn = ttk.Button(btn_row, text="Mulai Live Chat", command=self.on_chat_toggle)
+        self.chat_toggle_btn.pack(fill="x")
+
+        ttk.Label(
+            key_section,
+            text='Belum punya API key? console.cloud.google.com > New Project > '
+                 'enable "YouTube Data API v3" > Credentials > Create API Key.',
+            font=("Segoe UI", 7), foreground="#999999", wraplength=340, justify="left"
+        ).pack(anchor="w")
+
+        self.chat_status_label = ttk.Label(parent, text="", font=("Segoe UI", 8), foreground="#c62828",
+                                            wraplength=340, justify="left")
+        self.chat_status_label.pack(fill="x", pady=(6, 4))
+
+        chat_frame = ttk.Frame(parent)
+        chat_frame.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(chat_frame)
+        scrollbar.pack(side="right", fill="y")
+        self.chat_text = tk.Text(chat_frame, font=("Segoe UI", 9), wrap="word",
+                                  yscrollcommand=scrollbar.set, state="disabled", height=10)
+        self.chat_text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.chat_text.yview)
+        self.chat_text.tag_configure("author", font=("Segoe UI", 9, "bold"))
+
+    def on_chat_toggle(self):
+        if self.chat_poller is not None:
+            self.chat_poller.stop()
+            self.chat_poller = None
+            self.chat_toggle_btn.config(text="Mulai Live Chat")
+            self.chat_status_label.config(text="")
+            return
+
+        api_key = self.yt_api_key_var.get().strip()
+        video_id = self.yt_video_var.get().strip()
+        if not api_key or not video_id:
+            self.chat_status_label.config(text="Isi API Key dan URL/Video ID dulu.")
+            return
+
+        self.cfg["youtube_api_key"] = api_key
+        self.cfg["youtube_video_id"] = video_id
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.cfg, f, indent=2)
+
+        self.chat_text.config(state="normal")
+        self.chat_text.delete("1.0", "end")
+        self.chat_text.config(state="disabled")
+        self.chat_status_label.config(text="Menghubungkan ke YouTube...", foreground="#666666")
+
+        self.chat_poller = YoutubeChatPoller(
+            api_key, video_id,
+            on_messages=lambda msgs: self.root.after(0, lambda: self._append_chat_messages(msgs)),
+            on_error=lambda msg: self.root.after(0, lambda: self.chat_status_label.config(
+                text=f"⚠ {msg}", foreground="#c62828"))
+        )
+        self.chat_poller.start()
+        self.chat_toggle_btn.config(text="Berhenti Live Chat")
+
+    def _append_chat_messages(self, messages):
+        self.chat_status_label.config(text="")
+        self.chat_text.config(state="normal")
+        for author, text in messages:
+            self.chat_text.insert("end", f"{author}: ", "author")
+            self.chat_text.insert("end", f"{text}\n")
+        self.chat_text.see("end")
+        self.chat_text.config(state="disabled")
+
+    # ---------- handlers ----------
     def on_capture_mode_changed(self):
         self.cfg["capture_mode"] = "window" if self.capture_window_var.get() else "desktop"
         self.cfg["capture_window_title"] = self.window_title_var.get().strip()
@@ -637,10 +887,10 @@ class App:
         def update():
             self.switch.set_state(is_streaming)
             if usb_connected:
-                self.usb_label.config(text="USB: Terhubung", fg="#2e7d32")
+                self.usb_label.config(text="USB: Terhubung", foreground="#2e7d32")
                 self.device_label.config(text=f"Device: {device_name}")
             else:
-                self.usb_label.config(text="USB: Tidak terhubung", fg="#c62828")
+                self.usb_label.config(text="USB: Tidak terhubung", foreground="#c62828")
                 self.device_label.config(text="Device: -")
             self.status_label.config(text=f"Status: {status_text}")
             self.error_label.config(text=f"⚠ {last_error}" if last_error else "")
@@ -681,6 +931,8 @@ class App:
 
         def on_exit(_icon, _item):
             self.manager.stop()
+            if self.chat_poller:
+                self.chat_poller.stop()
             _icon.stop()
             self.root.after(0, self.root.destroy)
 
@@ -705,7 +957,7 @@ class App:
         loading.title("Potato Monitor Desk")
         loading.geometry("260x80")
         loading.resizable(False, False)
-        tk.Label(loading, text="Mencari device audio...", font=("Segoe UI", 9)).pack(expand=True)
+        ttk.Label(loading, text="Mencari device audio...", font=("Segoe UI", 9)).pack(expand=True)
         loading.transient(self.root)
         loading.grab_set()
 
@@ -733,7 +985,7 @@ class App:
         picker.title("Pilih device audio")
         picker.geometry("380x220")
         picker.resizable(False, False)
-        tk.Label(picker, text="Klik nama device yang mau dipakai untuk capture audio PC:",
+        ttk.Label(picker, text="Klik nama device yang mau dipakai untuk capture audio PC:",
                   font=("Segoe UI", 9), wraplength=340, justify="left").pack(pady=(12, 6), padx=12)
 
         listbox = tk.Listbox(picker, font=("Segoe UI", 9), height=6)
@@ -755,8 +1007,7 @@ class App:
             mb.showinfo("Potato Monitor Desk",
                          f'Disimpan: "{chosen}"\n\nNyalakan lagi switch Streaming untuk mencoba.')
 
-        tk.Button(picker, text="Pakai device ini", command=apply_selection).pack(pady=10)
-
+        ttk.Button(picker, text="Pakai device ini", command=apply_selection).pack(pady=10)
 
 def check_prereqs():
     missing = []
