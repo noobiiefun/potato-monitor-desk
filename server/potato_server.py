@@ -118,11 +118,35 @@ def load_config():
 
 
 def build_video_cmd(cfg):
-    """Capture layar (atau 1 window spesifik) jadi urutan JPEG (MJPEG) --
-    MURAH di CPU, tanpa motion estimation seperti H.264. Ini yang bikin
-    PC ringan."""
+    """Capture layar jadi urutan JPEG (MJPEG) -- MURAH di CPU, tanpa motion
+    estimation seperti H.264. Ini yang bikin PC ringan.
+
+    3 mode capture_mode:
+    - "desktop": seluruh layar, lewat gdigrab (paling simpel, paling kompatibel)
+    - "window": 1 window spesifik by judul, lewat gdigrab -- PERHATIAN: gdigrab
+      berbasis GDI, konten yang di-render GPU (mis. overlay webcam di preview
+      OBS lewat Direct3D) bisa freeze/tidak ter-capture dengan benar. Kalau
+      ketemu masalah itu, pakai mode "obs_virtual_cam" di bawah.
+    - "obs_virtual_cam": capture dari device "OBS Virtual Camera" (aktifkan
+      dulu tombol "Start Virtual Camera" di OBS) -- OBS sendiri yang render
+      komposit semua source (termasuk webcam), diekspos sebagai video device
+      biasa. Jauh lebih reliable daripada gdigrab window-title untuk kasus
+      preview yang ada elemen GPU-rendered di dalamnya.
+    """
     w, h = cfg["resolution"].split("x")
-    if cfg.get("capture_mode") == "window" and cfg.get("capture_window_title"):
+    mode = cfg.get("capture_mode", "desktop")
+
+    if mode == "obs_virtual_cam":
+        return [
+            FFMPEG_PATH, "-hide_banner", "-loglevel", "error",
+            "-f", "dshow", "-framerate", str(cfg["framerate"]),
+            "-video_size", f"{w}x{h}", "-i", "video=OBS Virtual Camera",
+            "-vf", f"scale={w}:{h}",
+            "-q:v", str(cfg["jpeg_quality"]),
+            "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"
+        ]
+
+    if mode == "window" and cfg.get("capture_window_title"):
         input_args = ["-i", f"title={cfg['capture_window_title']}"]
     else:
         input_args = ["-i", "desktop"]
@@ -747,10 +771,19 @@ class App:
 
         capture_section = ttk.LabelFrame(parent, text="Sumber Capture", padding=10)
         capture_section.pack(fill="x", pady=(0, 10))
-        self.capture_window_var = tk.BooleanVar(value=(self.cfg.get("capture_mode") == "window"))
-        ttk.Checkbutton(
-            capture_section, text="Capture 1 window saja (bukan seluruh layar)",
-            variable=self.capture_window_var, command=self.on_capture_mode_changed
+
+        self.capture_mode_var = tk.StringVar(value=self.cfg.get("capture_mode", "desktop"))
+        ttk.Radiobutton(
+            capture_section, text="Seluruh layar", value="desktop",
+            variable=self.capture_mode_var, command=self.on_capture_mode_changed
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            capture_section, text="1 window tertentu by judul (bisa freeze kalau ada konten GPU seperti webcam)",
+            value="window", variable=self.capture_mode_var, command=self.on_capture_mode_changed
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            capture_section, text="OBS Virtual Camera (disarankan kalau preview OBS ada webcam)",
+            value="obs_virtual_cam", variable=self.capture_mode_var, command=self.on_capture_mode_changed
         ).pack(anchor="w")
 
         self.window_title_var = tk.StringVar(value=self.cfg.get("capture_window_title", ""))
@@ -763,9 +796,10 @@ class App:
 
         ttk.Label(
             capture_section,
-            text='Daftar otomatis dari window yang sedang terbuka. Buka dulu '
-                 '"Windowed Projector (Preview)" di OBS (klik kanan Preview), '
-                 'lalu klik dropdown ini buat refresh.',
+            text='Untuk "1 window tertentu": daftar otomatis dari window yang sedang '
+                 'terbuka, klik dropdown buat refresh. Untuk "OBS Virtual Camera": '
+                 'klik dulu "Start Virtual Camera" di panel Controls OBS (tidak '
+                 'perlu Start Streaming/Recording), device-nya baru aktif setelah itu.',
             font=("Segoe UI", 7), foreground="#999999", wraplength=340, justify="left"
         ).pack(anchor="w", pady=(4, 0))
 
@@ -868,7 +902,7 @@ class App:
 
     # ---------- handlers ----------
     def on_capture_mode_changed(self):
-        self.cfg["capture_mode"] = "window" if self.capture_window_var.get() else "desktop"
+        self.cfg["capture_mode"] = self.capture_mode_var.get()
         self.cfg["capture_window_title"] = self.window_title_var.get().strip()
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(self.cfg, f, indent=2)
