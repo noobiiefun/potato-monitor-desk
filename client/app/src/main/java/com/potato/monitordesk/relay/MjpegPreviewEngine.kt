@@ -23,21 +23,34 @@ class MjpegPreviewEngine(
 ) {
     private val running = AtomicBoolean(false)
     private var thread: Thread? = null
+    private var decodeThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var socket: Socket? = null
+    private val videoSlot = LatestFrameSlot()
 
     fun start() {
         if (running.getAndSet(true)) return
+
+        decodeThread = Thread {
+            while (running.get()) {
+                val jpeg = videoSlot.take()
+                val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: continue
+                mainHandler.post { imageView.setImageBitmap(bmp) }
+            }
+        }.apply { isDaemon = true; start() }
+
         thread = Thread {
             try {
                 val s = Socket()
                 s.connect(InetSocketAddress(host, port), 5000)
                 s.tcpNoDelay = true
                 socket = s
+                // Thread ini HANYA baca dari socket & naruh ke slot -- decode
+                // JPEG (yang lebih lambat) terjadi di thread terpisah di atas,
+                // dan otomatis buang frame lama kalau decode ketinggalan.
                 FrameProtocol.readLoop(s.getInputStream(), object : FrameProtocol.Listener {
                     override fun onVideoFrame(jpeg: ByteArray) {
-                        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
-                        mainHandler.post { imageView.setImageBitmap(bmp) }
+                        videoSlot.put(jpeg)
                     }
 
                     override fun onAudioFrame(adts: ByteArray) {
@@ -53,6 +66,8 @@ class MjpegPreviewEngine(
     fun stop() {
         running.set(false)
         thread?.interrupt()
+        decodeThread?.interrupt()
+        videoSlot.wakeUp()
         try {
             socket?.close()
         } catch (_: Exception) {

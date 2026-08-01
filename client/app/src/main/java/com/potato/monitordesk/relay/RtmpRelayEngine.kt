@@ -31,8 +31,10 @@ class RtmpRelayEngine(
     private val running = AtomicBoolean(false)
     private var socket: Socket? = null
     private var readThread: Thread? = null
+    private var videoWorkerThread: Thread? = null
     private lateinit var rtmpClient: RtmpClient
     private var encoder: H264SurfaceEncoder? = null
+    private val videoSlot = LatestFrameSlot()
 
     private var audioInfoSent = false
     private var connectedNotified = false
@@ -74,12 +76,16 @@ class RtmpRelayEngine(
                     }
                 )
                 encoder?.start()
+                startVideoWorker()
 
                 rtmpClient.connect(rtmpUrl)
 
+                // Thread ini HANYA membaca dari socket & naruh ke slot/queue --
+                // tidak pernah decode/gambar langsung di sini, supaya baca
+                // socket tidak pernah ketahan oleh proses decode yang lambat.
                 FrameProtocol.readLoop(s.getInputStream(), object : FrameProtocol.Listener {
                     override fun onVideoFrame(jpeg: ByteArray) {
-                        handleVideoFrame(jpeg)
+                        videoSlot.put(jpeg)
                     }
 
                     override fun onAudioFrame(adts: ByteArray) {
@@ -89,8 +95,18 @@ class RtmpRelayEngine(
             } catch (e: Exception) {
                 listener.onRelayFailed(e.message ?: "Gagal konek ke server PC")
             } finally {
+                videoWorkerThread?.interrupt()
                 encoder?.stop()
                 encoder = null
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    private fun startVideoWorker() {
+        videoWorkerThread = Thread {
+            while (running.get()) {
+                val jpeg = videoSlot.take()
+                handleVideoFrame(jpeg)
             }
         }.apply { isDaemon = true; start() }
     }
@@ -149,6 +165,8 @@ class RtmpRelayEngine(
     fun stop() {
         if (!running.getAndSet(false)) return
         readThread?.interrupt()
+        videoWorkerThread?.interrupt()
+        videoSlot.wakeUp()
         try {
             if (::rtmpClient.isInitialized) rtmpClient.disconnect()
         } catch (_: Exception) {
