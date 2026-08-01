@@ -3,8 +3,8 @@
 ; Compile untuk menghasilkan PotatoMonitorDeskServerSetup.exe
 ;
 ; Prasyarat sebelum compile:
-;   1. Sudah menjalankan build_exe.bat sehingga ada file:
-;      dist\PotatoMonitorDeskServer.exe
+;   1. Sudah menjalankan build_exe.bat (mode --onedir) sehingga ada folder:
+;      dist\PotatoMonitorDeskServer\ (berisi PotatoMonitorDeskServer.exe + semua pendukungnya)
 
 #define MyAppName "Potato Monitor Desk Server"
 #define MyAppVersion "1.0"
@@ -29,7 +29,7 @@ ArchitecturesInstallIn64BitMode=x64
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "dist\PotatoMonitorDeskServer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\PotatoMonitorDeskServer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

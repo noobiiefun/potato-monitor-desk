@@ -437,6 +437,16 @@ class StreamManager:
             if p is not None:
                 try:
                     p.terminate()
+                    p.wait(timeout=3)  # pastikan proses (ffmpeg.exe) benar-benar
+                    # keluar & lepas handle-nya sebelum lanjut -- kalau tidak,
+                    # dan app ditutup dari mode --onefile, Windows bisa gagal
+                    # bersihkan folder temp karena file masih "dipegang".
+                except subprocess.TimeoutExpired:
+                    try:
+                        p.kill()
+                        p.wait(timeout=2)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 setattr(self, attr, None)
