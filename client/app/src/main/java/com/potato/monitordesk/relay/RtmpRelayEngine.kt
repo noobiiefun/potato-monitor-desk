@@ -120,10 +120,6 @@ class RtmpRelayEngine(
             canvas.drawBitmap(bmp, null, dst, null)
             enc.inputSurface.unlockCanvasAndPost(canvas)
             bmp.recycle()
-            if (!connectedNotified) {
-                connectedNotified = true
-                listener.onRelayConnected()
-            }
         } catch (_: Exception) {
             // 1 frame korup/parsial, skip -- lanjut frame berikutnya
         }
@@ -181,7 +177,12 @@ class RtmpRelayEngine(
 
     // ---------- ConnectChecker (status koneksi RTMP) ----------
     override fun onConnectionStarted(url: String) {}
-    override fun onConnectionSuccess() {}
+    override fun onConnectionSuccess() {
+        if (!connectedNotified) {
+            connectedNotified = true
+            listener.onRelayConnected()
+        }
+    }
     override fun onConnectionFailed(reason: String) = listener.onRelayFailed(reason)
     override fun onNewBitrate(bitrate: Long) {}
     override fun onDisconnect() = listener.onRelayDisconnected()

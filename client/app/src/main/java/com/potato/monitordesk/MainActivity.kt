@@ -189,7 +189,7 @@ class MainActivity : AppCompatActivity() {
         // supaya kamu cukup toggle switch LIVE tanpa perlu ketik manual.
         ControlClient.fetchRtmpUrl { url ->
             if (!url.isNullOrBlank()) {
-                mainHandler.post { LivePrefs.setRtmpUrl(this, url) }
+                mainHandler.post { LivePrefs.setRtmpUrl(this, url.trim()) }
             }
         }
         statusText.text = ""
@@ -207,7 +207,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- live streaming (relay TS dari PC -> RTMP) ----------
     private fun onLiveToggle(isChecked: Boolean) {
         if (isChecked) {
-            val rtmpUrl = LivePrefs.getRtmpUrl(this)
+            val rtmpUrl = LivePrefs.getRtmpUrl(this).trim()
             if (rtmpUrl.isBlank()) {
                 Toast.makeText(this, "Isi dulu alamat RTMP di ⚙ > Pengaturan Live.", Toast.LENGTH_LONG).show()
                 setSwitchStateSilently(false)
