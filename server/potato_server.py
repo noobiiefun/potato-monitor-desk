@@ -763,13 +763,37 @@ class App:
         self.error_label.pack(pady=(8, 0), fill="x")
 
     # ---------- Tab: Pengaturan ----------
+    def _make_scrollable(self, parent) -> tk.Widget:
+        """Bikin area yang bisa di-scroll di dalam sebuah tab -- dipakai kalau
+        kontennya lebih tinggi dari window (kejadian di tab Pengaturan setelah
+        makin banyak opsi ditambahkan). Return frame tempat kamu pack widget
+        seperti biasa (bukan langsung ke `parent`)."""
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+
+        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(window_id, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        return inner
+
     def _build_settings_tab(self, parent):
-        audio_section = ttk.LabelFrame(parent, text="Audio", padding=10)
+        scroll = self._make_scrollable(parent)
+
+        audio_section = ttk.LabelFrame(scroll, text="Audio", padding=10)
         audio_section.pack(fill="x", pady=(0, 10))
         ttk.Button(audio_section, text="Cek / pilih device audio...",
                    command=self.open_audio_device_picker).pack(fill="x")
 
-        capture_section = ttk.LabelFrame(parent, text="Sumber Capture", padding=10)
+        capture_section = ttk.LabelFrame(scroll, text="Sumber Capture", padding=10)
         capture_section.pack(fill="x", pady=(0, 10))
 
         self.capture_mode_var = tk.StringVar(value=self.cfg.get("capture_mode", "desktop"))
@@ -803,7 +827,7 @@ class App:
             font=("Segoe UI", 7), foreground="#999999", wraplength=340, justify="left"
         ).pack(anchor="w", pady=(4, 0))
 
-        rtmp_section = ttk.LabelFrame(parent, text="Live Streaming", padding=10)
+        rtmp_section = ttk.LabelFrame(scroll, text="Live Streaming", padding=10)
         rtmp_section.pack(fill="x")
         ttk.Label(rtmp_section, text="RTMP URL + Stream Key (dikirim otomatis ke HP):").pack(anchor="w")
         self.rtmp_url_var = tk.StringVar(value=self.cfg.get("rtmp_url", ""))

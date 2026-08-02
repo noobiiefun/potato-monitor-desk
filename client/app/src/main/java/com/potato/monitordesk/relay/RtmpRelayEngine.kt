@@ -105,7 +105,7 @@ class RtmpRelayEngine(
     private fun startVideoWorker() {
         videoWorkerThread = Thread {
             while (running.get()) {
-                val jpeg = videoSlot.take()
+                val jpeg = videoSlot.take() ?: break
                 handleVideoFrame(jpeg)
             }
         }.apply { isDaemon = true; start() }

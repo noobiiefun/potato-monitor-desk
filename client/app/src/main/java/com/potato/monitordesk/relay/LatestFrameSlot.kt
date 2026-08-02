@@ -21,10 +21,19 @@ class LatestFrameSlot {
         }
     }
 
-    /** Blok sampai ada frame, lalu kembalikan yang PALING BARU (dan kosongkan slot). */
-    fun take(): ByteArray {
+    /** Blok sampai ada frame, lalu kembalikan yang PALING BARU (dan kosongkan slot).
+     * Return null kalau thread di-interrupt (mis. pas stop()) -- caller harus
+     * berhenti loop begitu dapat null, JANGAN biarkan InterruptedException lolos
+     * ke luar: exception yang tidak ketangkep di thread MANA PUN akan mematikan
+     * SELURUH proses app di Android, bukan cuma thread itu saja. */
+    fun take(): ByteArray? {
         synchronized(lock) {
-            while (pending == null) lock.wait()
+            try {
+                while (pending == null) lock.wait()
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
             val data = pending!!
             pending = null
             return data

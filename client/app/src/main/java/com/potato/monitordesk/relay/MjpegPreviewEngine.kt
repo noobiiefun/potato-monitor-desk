@@ -33,7 +33,7 @@ class MjpegPreviewEngine(
 
         decodeThread = Thread {
             while (running.get()) {
-                val jpeg = videoSlot.take()
+                val jpeg = videoSlot.take() ?: break
                 val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: continue
                 mainHandler.post { imageView.setImageBitmap(bmp) }
             }
