@@ -38,6 +38,13 @@ class RtmpRelayEngine(
 
     private var audioInfoSent = false
     private var connectedNotified = false
+    private var currentRtmpUrl: String = ""
+    private var reconnectAttempts = 0
+
+    companion object {
+        private const val MAX_RECONNECT_ATTEMPTS = 8
+        private const val RECONNECT_DELAY_MS = 3000L
+    }
 
     // resolusi HARUS sama dengan config.json server ("resolution": "1280x720" default)
     private var videoWidth = 1280
@@ -45,6 +52,7 @@ class RtmpRelayEngine(
 
     fun start(rtmpUrl: String) {
         if (running.getAndSet(true)) return
+        currentRtmpUrl = rtmpUrl
         rtmpClient = RtmpClient(this)
 
         readThread = Thread {
@@ -178,14 +186,51 @@ class RtmpRelayEngine(
     // ---------- ConnectChecker (status koneksi RTMP) ----------
     override fun onConnectionStarted(url: String) {}
     override fun onConnectionSuccess() {
+        reconnectAttempts = 0
         if (!connectedNotified) {
             connectedNotified = true
             listener.onRelayConnected()
         }
     }
-    override fun onConnectionFailed(reason: String) = listener.onRelayFailed(reason)
+
+    override fun onConnectionFailed(reason: String) = handleDroppedConnection(reason)
     override fun onNewBitrate(bitrate: Long) {}
-    override fun onDisconnect() = listener.onRelayDisconnected()
+    override fun onDisconnect() {
+        // Kalau ini bukan berhenti yang disengaja (running masih true), coba
+        // sambung ulang -- ini gangguan jaringan seluler sesaat yang umum,
+        // bukan berarti stream key/setting-nya salah.
+        if (running.get()) {
+            handleDroppedConnection("Koneksi RTMP terputus")
+        } else {
+            listener.onRelayDisconnected()
+        }
+    }
+
     override fun onAuthError() = listener.onRelayFailed("Autentikasi RTMP gagal (cek stream key)")
     override fun onAuthSuccess() {}
+
+    private fun handleDroppedConnection(reason: String) {
+        if (!running.get()) return
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            listener.onRelayFailed("$reason (sudah coba sambung ulang $reconnectAttempts kali, menyerah)")
+            return
+        }
+        reconnectAttempts++
+        Thread {
+            try {
+                Thread.sleep(RECONNECT_DELAY_MS)
+            } catch (_: InterruptedException) {
+                return@Thread
+            }
+            if (!running.get()) return@Thread
+            try {
+                rtmpClient.disconnect()
+            } catch (_: Exception) {
+            }
+            try {
+                rtmpClient.connect(currentRtmpUrl)
+            } catch (_: Exception) {
+            }
+        }.apply { isDaemon = true; start() }
+    }
 }
